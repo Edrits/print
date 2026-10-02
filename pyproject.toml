@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "phomemo-m08f"
+version = "0.1.0"
+description = "Print PDFs, Markdown, text and photos to a Phomemo M08F A4 thermal printer, no vendor app."
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = [
+    "pillow>=10.1",
+    "pyserial>=3.5",
+    "pymupdf>=1.24",
+    "markdown-it-py>=3.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+phomemo = "phomemo.cli:main"
+phomemo-ipp-job = "phomemo.ipp:job_main"
+
+[tool.setuptools.packages.find]
+include = ["phomemo*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore:builtin type .* has no __module__ attribute:DeprecationWarning"]
