@@ -441,3 +441,60 @@ def test_late_no_paper_report_stops_the_job(monkeypatch):
     with pytest.raises(ConnectionError, match="No paper"):
         asyncio.run(ble.send(bytes(244 * 100)))
     assert len(printer.received) <= 2 * 244
+
+
+class DroppingPrinter(FakePrinter):
+    """Drops the link (bleak's error) on its first `drops` connections, before data."""
+    connections = 0
+
+    def __init__(self, drops):
+        super().__init__()
+        self.drops = drops
+
+    async def write_gatt_char(self, char, data, response=False):
+        if DroppingPrinter.connections <= self.drops:
+            raise BleakError("Service Discovery has not been performed yet")
+        await super().write_gatt_char(char, data, response)
+
+
+def _counting_link(monkeypatch, printer):
+    async def find(target):
+        return "dev", "M08F"
+    async def connect(dev):
+        DroppingPrinter.connections += 1
+        return printer, "fake"
+    monkeypatch.setattr(ble, "find_printer", find)
+    monkeypatch.setattr(ble, "connect", connect)
+
+
+def test_link_drop_before_data_reconnects(monkeypatch):
+    DroppingPrinter.connections = 0
+    printer = DroppingPrinter(drops=1)
+    _counting_link(monkeypatch, printer)
+    asyncio.run(ble.send(b"\x1b\x40" * 300))
+    assert DroppingPrinter.connections == 2
+    assert bytes(printer.received) == b"\x1b\x40" * 300
+
+
+def test_link_that_keeps_dropping_gives_a_plain_error(monkeypatch):
+    DroppingPrinter.connections = 0
+    printer = DroppingPrinter(drops=99)
+    _counting_link(monkeypatch, printer)
+    with pytest.raises(ConnectionError, match="keeps dropping the Bluetooth connection"):
+        asyncio.run(ble.send(b"\x1b\x40"))
+    assert DroppingPrinter.connections == ble.LINK_RETRIES + 1
+
+
+def test_link_drop_mid_job_is_not_retried(monkeypatch):
+    """Retrying after data went out would print part of the page twice."""
+    printer = FakePrinter()
+    real = printer.write_gatt_char
+
+    async def drop_after_some(char, data, response=False):
+        if len(printer.received) >= 244 * 10:
+            raise BleakError("disconnected")
+        await real(char, data, response)
+    printer.write_gatt_char = drop_after_some
+    _fake_link(monkeypatch, printer)
+    with pytest.raises(ConnectionError, match="dropped the Bluetooth connection after"):
+        asyncio.run(ble.send(bytes(244 * 50)))

@@ -177,13 +177,27 @@ async def find_printer(target: str | None, timeout: float = 10.0):
             return dev, dev.name
         if not target and looks_like_printer(dev.name):
             return dev, dev.name
+    from bleak import BleakScanner
+    from bleak.exc import BleakError
+
+    def wanted(dev, adv) -> bool:
+        name = adv.local_name or dev.name
+        if target:
+            return target.lower() in (dev.address.lower(), (name or "").lower())
+        return looks_like_printer(name)
+
+    # Stop at the first match: a full discover() always waits out its timeout
+    # (10 s), while the M08F is usually found in well under a second.
+    try:
+        dev = await BleakScanner.find_device_by_filter(wanted, timeout=timeout)
+        if dev is not None:
+            return dev, dev.name
+    except BleakError:
+        pass                 # e.g. the first-run permission prompt: the slow path handles it
     found = await _discover(timeout)
     for dev, adv in found.values():
-        name = adv.local_name or dev.name
-        if target and target.lower() in (dev.address.lower(), (name or "").lower()):
-            return dev, name
-        if not target and looks_like_printer(name):
-            return dev, name
+        if wanted(dev, adv):
+            return dev, adv.local_name or dev.name
     return None, None
 
 
@@ -308,13 +322,14 @@ class Credits:
         self.available -= 1
 
 
-async def ask_paper(client, char, credits: Credits, flow: bool, timeout: float = 6.0,
-                    tries: int = 2):
+async def ask_paper(client, char, credits: Credits, flow: bool, timeout: float = 1.0,
+                    tries: int = 1):
     """True if a sheet is loaded, False if not, None if the printer doesn't answer.
 
-    Right after connecting the printer can take several seconds to answer (seen
-    2026-10-03: a 3 s wait missed it), so settle first, wait longer, ask twice."""
-    await asyncio.sleep(1.0)
+    For the first ~10-15 s after connecting the M08F doesn't answer (measured
+    2026-10-03: no reply in 2 x 6 s, then 0.05 s), and its late answer arrives
+    once print data flows. So ask, wait briefly, and let send()'s early stop
+    act on a late "no paper"; waiting longer only delays every print."""
     for _ in range(tries):
         credits.paper_report.clear()
         if flow:
@@ -350,15 +365,45 @@ async def _eject(client, char, credits: Credits, size: int, no_resp: bool) -> fl
     return mm
 
 
+LINK_RETRIES = 2      # reconnects when the link drops before any print data was sent
+
+
 async def send(data: bytes, target: str | None = None, rate: int = DEFAULT_RATE,
                eject: bool = False, require_paper: bool = True) -> None:
     """eject: after the data, feed until the printer runs the sheet out (sheet media).
-    require_paper: refuse to send if the printer says no sheet is loaded."""
+    require_paper: refuse to send if the printer says no sheet is loaded.
+
+    The M08F sometimes drops the link right after connecting (bleak then raises
+    "Service Discovery has not been performed yet"). Before any print data has
+    gone out that is safe to retry; after, a retry would print part of a page twice."""
+    from bleak.exc import BleakError
+
     dev, name = await find_printer(target)
     if dev is None:
         raise ConnectionError(
             "No Bluetooth printer found. Is it on (normal blue mode, not solid red)? "
             "Run `phomemo ble-scan` to see what's nearby.")
+    for attempt in range(LINK_RETRIES + 1):
+        progress = {"sent": 0}
+        try:
+            return await _send_once(data, dev, name, rate, eject, require_paper, progress)
+        except BleakError as e:
+            if progress["sent"]:
+                raise ConnectionError(
+                    f"The printer dropped the Bluetooth connection after {progress['sent']:,} "
+                    "bytes. Part of the page may have printed; pull the sheet out and print "
+                    "again.") from e
+            if attempt == LINK_RETRIES:
+                raise ConnectionError(
+                    "The printer keeps dropping the Bluetooth connection before printing "
+                    f"({e}). Nothing was printed. Turn it off and on, then try again.") from e
+            print(f"  link dropped before printing ({e}); reconnecting...",
+                  file=sys.stderr, flush=True)
+            await asyncio.sleep(2.0)
+
+
+async def _send_once(data: bytes, dev, name, rate: int, eject: bool, require_paper: bool,
+                     progress: dict) -> None:
     print(f"Connecting to {name or dev.address}...", file=sys.stderr, flush=True)
     client, how = await connect(dev)
     print(f"  connected ({how})", file=sys.stderr, flush=True)
@@ -415,6 +460,7 @@ async def send(data: bytes, target: str | None = None, rate: int = DEFAULT_RATE,
                 await credits.take()
             await client.write_gatt_char(char, piece, response=not no_resp)
             sent += len(piece)
+            progress["sent"] = sent
             if not flow:   # pace: never get ahead of `rate` bytes/second
                 ahead = sent / rate - (time.monotonic() - start)
                 if ahead > 0:
@@ -426,14 +472,23 @@ async def send(data: bytes, target: str | None = None, rate: int = DEFAULT_RATE,
                       f"{_short(char.uuid)} ({size}-byte chunks)", end="", file=sys.stderr, flush=True)
         print(f"\n  content: {time.monotonic() - start:.1f} s", file=sys.stderr, flush=True)
         if eject and flow:
+            from bleak.exc import BleakError
             t = time.monotonic()
-            mm = await _eject(client, char, credits, size, no_resp)
-            print(f"  feed-out: {mm:.0f} mm in {time.monotonic() - t:.1f} s"
-                  + ("" if credits.paper_out else " (no paper-out report; stopped feeding)"),
-                  file=sys.stderr, flush=True)
+            try:
+                mm = await _eject(client, char, credits, size, no_resp)
+                print(f"  feed-out: {mm:.0f} mm in {time.monotonic() - t:.1f} s"
+                      + ("" if credits.paper_out else " (no paper-out report; stopped feeding)"),
+                      file=sys.stderr, flush=True)
+            except BleakError as e:   # the page is printed; only the run-out was cut short
+                print(f"  feed-out cut short, link dropped ({e}): pull the sheet out",
+                      file=sys.stderr, flush=True)
+                return
         await asyncio.sleep(2.0)   # let the last packets drain before disconnecting
     finally:
-        await client.disconnect()
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
 
 
 class BlePort:
