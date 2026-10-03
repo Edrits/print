@@ -115,6 +115,8 @@ class App:
         with self.lock:
             if self.job.state == "printing":
                 raise RuntimeError("a job is already printing")
+            if self.dry_run is not None:
+                via = "dry"           # written to a file: never Bluetooth, page progress works
             job = Job(state="printing", total=len(pages) * copies, started=time.time(),
                       files=files, via=via)
             self.job = job
@@ -134,7 +136,8 @@ class App:
 
     def _check(self, job: Job):
         try:
-            with transport.open_port(ble="auto", ble_require_paper=False) as port:
+            with transport.open_port(ble="auto", ble_require_paper=False,
+                                     ble_isolate=True) as port:
                 port.send(escpos.initialize())
             job.state = "done"
         except Exception as e:
@@ -149,7 +152,8 @@ class App:
                 device = self.device or transport.autodetect()
             with transport.open_port(device=device, dry_run_path=self.dry_run,
                                      dry_run=self.dry_run is not None, ble=ble,
-                                     ble_eject=spec.page_height_dots(media) is not None) as port:
+                                     ble_eject=spec.page_height_dots(media) is not None,
+                                     ble_isolate=True) as port:
                 port.send(escpos.initialize() + escpos.density(density))
                 for page in jobmod.sequence(pages, copies, media):
                     if job.cancel.is_set():
@@ -192,7 +196,7 @@ class App:
                 up.kind = up.kind or render.detect_kind(str(up.path))
                 up.pages, up.error = render.render(str(up.path), ro, kind=up.kind), None
             except Exception as e:
-                up.pages, up.error = [], _first_line(e)
+                up.pages, up.error = [], _render_error(e, up)
             up.version += 1
         return up
 
@@ -212,6 +216,14 @@ def _ble_mm_per_s() -> float:
     except Exception:
         DEFAULT_RATE = 20_000
     return round(DEFAULT_RATE / (spec.BYTES_PER_LINE * spec.DOTS_PER_MM), 2)
+
+
+def _render_error(e: Exception, up: Upload) -> str:
+    """A message about the person's file, not our temp copy of it."""
+    text = _first_line(e).replace(str(up.path), up.name).replace(up.path.name, up.name)
+    if up.kind == "pdf" and re.search(r"failed to open|cannot open|no objects|format error", text, re.I):
+        return "Couldn't open this PDF. It may be damaged or not really a PDF."
+    return text
 
 
 def _first_line(e: Exception) -> str:

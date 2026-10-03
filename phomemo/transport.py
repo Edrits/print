@@ -75,7 +75,8 @@ class FilePort:
 def open_port(device: str | None = None, baud: int = spec.BAUD,
               dry_run_path: Path | None = None, dry_run: bool = False,
               ble: str | None = None, ble_rate: int | None = None,
-              ble_eject: bool = False, ble_require_paper: bool = True):
+              ble_eject: bool = False, ble_require_paper: bool = True,
+              ble_isolate: bool = False):
     """Yield something with .send(bytes). Never raises on dry runs.
 
     ble: None for USB; "auto" to find the printer by name; or a name/address.
@@ -92,7 +93,7 @@ def open_port(device: str | None = None, baud: int = spec.BAUD,
     if ble is not None:
         from .ble import DEFAULT_RATE, BlePort
         port = BlePort(None if ble == "auto" else ble, ble_rate or DEFAULT_RATE,
-                       eject=ble_eject, require_paper=ble_require_paper)
+                       eject=ble_eject, require_paper=ble_require_paper, isolate=ble_isolate)
         try:
             yield port
         finally:

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 import threading
 import time
 import urllib.request
@@ -91,6 +92,10 @@ def test_bleport_sends_nothing_until_close(monkeypatch):
 
 @pytest.fixture
 def ui(monkeypatch):
+    # The UI sends from a child process; run that in-process so ble.send can be faked.
+    monkeypatch.setattr(ble, "run_isolated", lambda data, target, rate, eject, require_paper:
+                        asyncio.run(ble.send(data, target, rate, eject=eject,
+                                             require_paper=require_paper)))
     app = web.App()          # not a dry run: the real BLE port, with ble.send faked
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), type("H", (web.Handler,), {"app": app}))
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
@@ -498,3 +503,46 @@ def test_link_drop_mid_job_is_not_retried(monkeypatch):
     _fake_link(monkeypatch, printer)
     with pytest.raises(ConnectionError, match="dropped the Bluetooth connection after"):
         asyncio.run(ble.send(bytes(244 * 50)))
+
+
+# --- the child process the UI sends from --------------------------------------
+
+def _child(monkeypatch, tmp_path, body):
+    script = tmp_path / "child.py"
+    script.write_text("import sys, os, json\n" + body)
+    monkeypatch.setattr(ble, "JOB_CMD", [sys.executable, str(script)])
+
+
+def test_isolated_job_relays_printer_state(monkeypatch, tmp_path):
+    _child(monkeypatch, tmp_path, 'print("STATE " + json.dumps({"paper": True, "paper_at": 1.0}))\n')
+    ble.printer_state["paper"] = None
+    ble.run_isolated(b"\x1b\x40", None, 1000, True, True)
+    assert ble.printer_state["paper"] is True
+
+
+def test_isolated_job_error_becomes_connection_error(monkeypatch, tmp_path):
+    _child(monkeypatch, tmp_path, 'print("ERROR No paper: load a sheet"); sys.exit(1)\n')
+    with pytest.raises(ConnectionError, match="No paper: load a sheet"):
+        ble.run_isolated(b"\x1b\x40", None, 1000, False, True)
+
+
+def test_isolated_job_crash_leaves_the_caller_running(monkeypatch, tmp_path):
+    """CoreBluetooth aborts its process (SIGABRT); that must cost one job only."""
+    # SIGKILL stands in for SIGABRT: same "killed by a signal" path, no crash dialog
+    _child(monkeypatch, tmp_path, "import signal; os.kill(os.getpid(), signal.SIGKILL)\n")
+    with pytest.raises(ConnectionError, match="Bluetooth crashed"):
+        ble.run_isolated(b"\x1b\x40", None, 1000, False, True)
+
+
+def test_ble_job_child_runs_send(monkeypatch, tmp_path, capsys):
+    from phomemo import ble_job
+    got = []
+
+    async def fake_send(data, target, rate, eject=False, require_paper=True):
+        got.append((data, target, rate, eject, require_paper))
+    monkeypatch.setattr(ble, "send", fake_send)
+    job_file = tmp_path / "job.bin"
+    job_file.write_bytes(b"\x1b\x40")
+    assert ble_job.main([str(job_file), "--eject", "--no-require-paper", "--rate", "123"]) == 0
+    assert got == [(b"\x1b\x40", None, 123, True, False)]
+    assert "STATE " in capsys.readouterr().out

@@ -21,13 +21,15 @@
 
 /* payout with real thumbnails */
 .tp-sheet-wrap { width: 84px; }
+.tp-sheet-cap { justify-content: flex-start; }
 .tp-sheet { width: 84px; aspect-ratio: auto; cursor: zoom-in; padding: 0; border: 0; display: block; }
 .tp-sheet img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: top; image-rendering: auto; }
 .tp-sheet--long { -webkit-mask: linear-gradient(#000 80%, transparent); mask: linear-gradient(#000 80%, transparent); }
 .tp-sheet--pending { background: var(--sheet); opacity: .5; }
 .tp-payout { max-width: 100%; }
 .tp-payout { padding-top: var(--space-4); }
-.tp-file-label { margin: 0 0 var(--space-1); }
+/* the name never widens its group: it takes the width of the sheets below and truncates */
+.tp-file-label { margin: 0 0 var(--space-1); width: 0; min-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 .tp-split { margin-top: 0; }
 
 /* queue */
@@ -44,6 +46,9 @@
 .tp-file { grid-template-columns: 16px 28px minmax(0, 1fr) auto auto auto; }
 
 /* progress */
+.tp-progress-title { font-size: 18px; line-height: 24px; font-weight: 600; }
+/* a panel that is only a message: no rule under it */
+.tp-panel-head--solo { border-bottom: 0; }
 .tp-progress-panel .tp-panel-head { flex-wrap: wrap; }
 .tp-bar > span { transition: width .3s ease-out; }
 .tp-msg { display: flex; gap: var(--space-2); align-items: flex-start; font-size: 14px; }
@@ -60,7 +65,7 @@
 .tp-lightbox-bar .tp-btn { background: transparent; color: #f4f4f1; border-color: rgba(255,255,255,.35); }
 .tp-lightbox-bar .tp-btn:hover { background: rgba(255,255,255,.12); }
 .tp-lightbox-body { flex: 1; overflow: auto; display: flex; justify-content: center; padding: 0 var(--space-4) var(--space-6); }
-.tp-lightbox-body img { width: min(840px, 100%); height: auto; align-self: flex-start; background: #fff; box-shadow: var(--shadow-pop); image-rendering: pixelated; }
+.tp-lightbox-body img { width: min(840px, 100%); height: auto; align-self: flex-start; background: #fff no-repeat top / 100% auto; box-shadow: var(--shadow-pop); image-rendering: pixelated; }
 
 /* spinner dot for "searching" and "rendering" */
 @keyframes tp-pulse { 50% { opacity: .25; } }
@@ -73,9 +78,8 @@
   .tp-app { grid-template-columns: 1fr; grid-template-rows: auto auto auto auto; height: auto; min-height: 100vh; }
   .tp-main, .tp-side { overflow: visible; }
   .tp-side { border-left: 0; border-top: 1px solid var(--line); }
-  .tp-summary { grid-template-columns: repeat(2, 1fr); }
-  .tp-stat:nth-child(2) { border-right: 0; }
-  .tp-stat:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+  .tp-stat { padding: var(--space-3); }
+  .tp-figure { font-size: 24px; line-height: 28px; }
   .tp-foot { position: sticky; bottom: 0; flex-wrap: wrap; }
   .tp-main, .tp-top, .tp-foot { padding-left: var(--space-4); padding-right: var(--space-4); }
 }
@@ -87,3 +91,25 @@
 .tp-paper { font-family: var(--font-sans); font-weight: 500; }
 .tp-paper--ok { color: var(--ok); }
 .tp-paper--out { color: var(--danger); }
+
+.tp-switch { background: none; border: 0; padding: 0; font: 400 12px/16px var(--font-sans); color: var(--ink-muted); align-self: flex-start; }
+.tp-switch:hover { color: var(--ink); }
+
+/* not checked yet: no claim either way */
+.tp-status--idle .tp-dot { background: transparent; box-shadow: inset 0 0 0 1.5px var(--ink-muted); }
+.tp-conn--idle .tp-conn-glyph { color: var(--ink-muted); }
+.tp-conn--idle .tp-conn-state .tp-dot { background: transparent; box-shadow: inset 0 0 0 1.5px var(--ink-muted); }
+
+/* three figures, each said once */
+.tp-summary { grid-template-columns: repeat(3, 1fr); }
+
+/* dry run: a warning, not a connection */
+.tp-conn--dry .tp-conn-glyph { color: var(--warn); }
+.tp-conn--dry .tp-conn-state .tp-dot { background: var(--warn); }
+
+/* the side card has room for sentences, not just device ids */
+.tp-side .tp-conn-detail { font-family: var(--font-sans); }
+.tp-conn-actions { grid-column: 1 / -1; display: flex; gap: var(--space-2); }
+.tp-conn-actions .tp-btn { flex: 1; padding: 0 var(--space-3); }
+.tp-file-meta:has(.tp-file-error) { white-space: normal; align-items: flex-start; }
+.tp-file-error { font-family: var(--font-sans); color: var(--danger); }

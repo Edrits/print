@@ -25,7 +25,7 @@
 
   // ---- state ---------------------------------------------------------------
 
-  const defaults = { media: "a4", density: 5, dither: null, copies: 1, fit: "page", via: "usb" };
+  const defaults = { media: "a4", density: 5, dither: null, copies: 1, fit: "page", via: "ble" };     // Bluetooth first; USB is the fallback
   const settings = Object.assign({}, defaults, load("thermal.settings"));
   const state = {
     files: [],            // {id, name, kind, size, status: uploading|rendering|ready|error, error, pages:[{h}], version}
@@ -34,6 +34,7 @@
     statusError: false,
     dismissedJob: load("thermal.dismissed"),
     lightbox: null,       // {fileIndex, pageIndex}
+    notice: null,         // a request that failed to start, shown above the work
   };
 
   function load(key) { try { return JSON.parse(localStorage.getItem(key)); } catch { return null; } }
@@ -123,19 +124,23 @@
     const ids = readyFiles().map((f) => f.id);
     try {
       await postJSON("/api/print", { files: ids, density: settings.density, copies: settings.copies, media: settings.media, via: settings.via });
-    } catch (e) { alert(`Couldn't start printing: ${e.message}`); }
+      state.notice = null;
+      scrollToTop();
+    } catch (e) { state.notice = `Couldn't start printing: ${e.message}`; }
     poll();
   }
   async function testPage() {
-    try { await postJSON("/api/test", { density: settings.density, via: settings.via }); }
-    catch (e) { alert(`Couldn't print the test page: ${e.message}`); }
+    try { await postJSON("/api/test", { density: settings.density, via: settings.via }); state.notice = null; scrollToTop(); }
+    catch (e) { state.notice = `Couldn't print the test page: ${e.message}`; }
     poll();
   }
   async function checkBle() {
-    try { await postJSON("/api/ble/check", {}); }
-    catch (e) { alert(`Couldn't start the check: ${e.message}`); }
+    try { await postJSON("/api/ble/check", {}); state.notice = null; scrollToTop(); }
+    catch (e) { state.notice = `Couldn't start the check: ${e.message}`; }
     poll();
   }
+  // The progress panel sits at the top of the main column: bring it into view.
+  function scrollToTop() { $("main").scrollTo({ top: 0 }); window.scrollTo({ top: 0 }); }
   async function cancelJob() { await postJSON("/api/job/cancel", {}).catch(() => {}); poll(); }
 
   // ---- derived -------------------------------------------------------------
@@ -150,7 +155,8 @@
     const pages = files.flatMap((f) => f.pages);
     const mm = pages.reduce((s, p) => s + sheetMM(p), 0) * settings.copies;
     const speed = settings.via === "ble" ? (state.status?.ble_mm_per_s || 12) : (state.status?.usb_mm_per_s || 15);
-    return { files: files.length, sheets: pages.length * settings.copies, perCopy: pages.length, mm, seconds: mm / speed };
+    return { files: files.length, sheets: pages.length * settings.copies, perCopy: pages.length, mm, seconds: mm / speed,
+      noun: settings.media === "continuous" ? "page" : "sheet" };
   }
 
   function connection() {
@@ -179,11 +185,18 @@
     const j = job();
     if (j.state === "printing" && j.kind === "check") return `<span class="tp-status tp-status--busy"><span class="tp-dot"></span>Checking Bluetooth…</span>`;
     if (j.state === "printing" && j.via === "ble") return `<span class="tp-status tp-status--busy"><span class="tp-dot"></span>Sending <span class="tp-via">Bluetooth</span></span>`;
-    if (j.state === "printing") return `<span class="tp-status tp-status--busy"><span class="tp-dot"></span>Printing <span class="tp-via">${j.page + 1 > j.total ? j.total : j.page + 1}/${j.total}</span></span>`;
+    if (j.state === "printing") return `<span class="tp-status tp-status--busy"><span class="tp-dot"></span>${j.via === "dry" ? "Writing" : "Printing"} <span class="tp-via">${Math.min(j.page + 1, j.total)}/${j.total}</span></span>`;
     const c = connection();
     switch (c.kind) {
       case "usb": return `<span class="tp-status"><span class="tp-dot"></span>Connected <span class="tp-via">USB</span></span>`;
-      case "ble": return `<span class="tp-status tp-status--warn"><span class="tp-dot"></span>Bluetooth <span class="tp-via">checked at print</span></span>`;
+      case "ble": {
+        const seen = lastContact();
+        if (seen && !seen.ok) return `<span class="tp-status tp-status--off"><span class="tp-dot"></span>Printer not found <span class="tp-via">Bluetooth</span></span>`;
+        if (!seen) return `<span class="tp-status tp-status--idle"><span class="tp-dot"></span>Not checked yet <span class="tp-via">Bluetooth</span></span>`;
+        const paper = state.status?.ble?.paper;
+        if (paper === false) return `<span class="tp-status tp-status--off"><span class="tp-dot"></span>No paper <span class="tp-via">Bluetooth</span></span>`;
+        return `<span class="tp-status"><span class="tp-dot"></span>${paper ? "Paper loaded" : "Printer found"} <span class="tp-via">${seen.when}</span></span>`;
+      }
       case "dry": return `<span class="tp-status tp-status--warn"><span class="tp-dot"></span>Dry run <span class="tp-via">no printer</span></span>`;
       case "search": return `<span class="tp-status tp-status--busy"><span class="tp-dot"></span>Looking for printer…</span>`;
       case "lost": return `<span class="tp-status tp-status--off"><span class="tp-dot"></span>App server stopped</span>`;
@@ -195,18 +208,38 @@
     const c = connection();
     const card = (cls, glyph, title, detail, action = "") =>
       `<div class="tp-conn ${cls}" role="status"><div class="tp-conn-glyph">${icon(glyph)}</div><div><div class="tp-conn-state"><span class="tp-dot"></span>${title}</div><div class="tp-conn-detail">${detail}</div></div>${action}</div>`;
-    const test = `<button class="tp-btn" data-action="test" ${printing() ? "disabled" : ""}>Print test page</button>`;
+    const test = `<button class="tp-btn" data-action="test" title="Print the calibration page: ruler, border, dithering and type samples" ${printing() ? "disabled" : ""}>Test page</button>`;
     let html;
     switch (c.kind) {
-      case "usb": html = card("", "usb", "Connected over USB", `Phomemo M08F · ${esc(c.detail)}`, test); break;
-      case "dry": html = card("tp-conn--ble", "file", "Dry run", `Nothing prints. Jobs are saved to ${esc(c.detail.split("/").pop())}`, test); break;
-      case "ble": html = card("tp-conn--ble", "ble", "Bluetooth (experimental)", `Printer is in Bluetooth mode (blinking blue). Check the link first: it uses no paper.${paperLine()}`, `<div class="tp-row" style="grid-column:1/-1;gap:var(--space-2)"><button class="tp-btn" data-action="ble-check" ${printing() ? "disabled" : ""}>Check connection</button>${test}</div>`); break;
-      case "search": html = card("tp-conn--search", "printer", "Looking for printer…", "Checking USB"); break;
+      case "usb": html = card("", "usb", "Connected over USB", `Phomemo M08F · <span class="tp-mono">${esc(c.detail)}</span>`, test); break;
+      case "dry": html = card("tp-conn--dry", "file", "Dry run", `Nothing prints. Jobs are saved to ${esc(c.detail.split("/").pop())}`, test); break;
+      case "ble": {
+        const seen = lastContact();
+        const [cls, title, detail] = !seen
+          ? ["tp-conn--idle", "Not checked yet", "Turn the printer on (light blinks blue) and load a sheet (light turns green). Then check it, or just print."]
+          : !seen.ok
+            ? ["tp-conn--off", "Printer not found", "Turn it on (light blinks blue), keep it nearby, then check again."]
+            : ["", "Printer found", `Last reached ${seen.when}. It connects again when you print.${paperLine()}`];
+        html = card(cls, "ble", title, detail, `<div class="tp-conn-actions"><button class="tp-btn" data-action="ble-check" ${printing() ? "disabled" : ""}>${seen && !seen.ok ? "Check again" : "Check printer"}</button>${test}</div>`); break;
+      }
+      case "search": html = card("tp-conn--search", "printer", "Starting…", "Connecting to the app server"); break;
       case "lost": html = card("tp-conn--off", "printerOff", "Lost the app server", "Run <code>phomemo ui</code> again in Terminal, then reload."); break;
-      default: html = card("tp-conn--off", "printerOff", "Printer not connected", "Plug in USB, then hold the power button ~3 s until the light is solid red. Blinking blue means Bluetooth mode.", `<button class="tp-btn" data-action="retry">Check again</button>`);
+      default: html = card("tp-conn--off", "printerOff", "No USB printer", "Plug in the cable, then hold the power button ~3 s until the light is solid red.", `<button class="tp-btn" data-action="retry">Check again</button>`);
     }
-    const seg = [["usb", "USB"], ["ble", "Bluetooth"]].map(([v, l]) => `<button data-action="via" data-value="${v}" aria-pressed="${settings.via === v}">${l}</button>`).join("");
-    return `<div class="tp-stack" style="gap:var(--space-3)"><div class="tp-overline">Printer</div>${html}<div class="tp-seg" role="group" aria-label="Connection">${seg}</div></div>`;
+    const other = c.kind === "dry" || c.kind === "lost" || c.kind === "search" ? "" : settings.via === "ble"
+      ? `<button class="tp-link tp-switch" data-action="via" data-value="usb">Use USB instead</button>`
+      : `<button class="tp-link tp-switch" data-action="via" data-value="ble">Back to Bluetooth</button>`;
+    return `<div class="tp-stack" style="gap:var(--space-3)"><div class="tp-overline">Printer</div>${html}${other}</div>`;
+  }
+
+  // Over Bluetooth the printer is only contacted during a check or a print, so
+  // "reachable" is the outcome of the last of those, not a live connection.
+  function lastContact() {
+    const j = job();
+    if (j.via !== "ble" || !j.started || j.state === "printing" || j.state === "idle") return null;
+    const unreachable = j.state === "error" && /No Bluetooth printer found|keeps dropping|couldn't hold a connection|Bluetooth crashed/i.test(j.error || "");
+    const ago = Math.max(0, Math.round((state.status.now - j.started) / 60));
+    return { ok: !unreachable, when: ago < 1 ? "just now" : `${ago} min ago` };
   }
 
   // Paper state is only known from what the printer last reported over Bluetooth.
@@ -242,11 +275,11 @@
     const what = j.files.length === 1 ? esc(j.files[0]) : plural(j.files.length, "file");
     const dismiss = `<button class="tp-btn tp-btn--ghost" data-action="dismiss">Dismiss</button>`;
     if (j.kind === "check") {
-      if (j.state === "printing") return `<div class="tp-panel"><div class="tp-pad tp-stack" style="gap:var(--space-3)"><div class="tp-progress-row"><span class="tp-heading" style="font-weight:600">Checking Bluetooth…</span><span class="tp-caption">usually 10–20 s</span></div><div class="tp-bar tp-bar--indeterminate"><span></span></div><p class="tp-caption">Finding the printer, connecting and sending a reset command. Nothing prints.</p></div></div>`;
+      if (j.state === "printing") return `<div class="tp-panel"><div class="tp-pad tp-stack" style="gap:var(--space-3)"><div class="tp-progress-row"><span class="tp-progress-title">Checking the printer…</span><span class="tp-caption">up to ~25 s</span></div><div class="tp-bar tp-bar--indeterminate"><span></span></div><p class="tp-caption">Connecting over Bluetooth and asking whether paper is loaded. The printer is slow to answer just after connecting. Nothing prints.</p></div></div>`;
       const body = j.state === "done"
-        ? `<div class="tp-msg tp-msg--ok"><div><strong>Bluetooth works.</strong><div class="tp-msg-detail">Connected and the printer answered. ${state.status?.ble?.paper === true ? "Paper is loaded." : state.status?.ble?.paper === false ? "No paper: load a sheet (the light turns green) before printing." : "It didn't say whether paper is loaded."} Nothing was printed.</div></div></div>`
-        : `<div class="tp-msg tp-msg--error">${icon("x")}<div><strong>Bluetooth check failed.</strong><div class="tp-msg-detail">${esc(j.error || "unknown error")}</div></div></div>`;
-      return `<div class="tp-panel"><div class="tp-panel-head">${body}${dismiss}</div></div>`;
+        ? `<div class="tp-msg tp-msg--ok"><div><strong>Printer found.</strong><div class="tp-msg-detail">Connected and the printer answered. ${state.status?.ble?.paper === true ? "Paper is loaded." : state.status?.ble?.paper === false ? "No paper: load a sheet (the light turns green) before printing." : "It didn't say whether paper is loaded."} Nothing was printed.</div></div></div>`
+        : `<div class="tp-msg tp-msg--error">${icon("x")}<div><strong>Couldn't reach the printer.</strong><div class="tp-msg-detail">${esc(j.error || "unknown error")}</div></div></div>`;
+      return `<div class="tp-panel"><div class="tp-panel-head tp-panel-head--solo">${body}${dismiss}</div></div>`;
     }
     const ws = state.status?.ble?.waiting_since;
     const paused = ws && state.status.now - ws > 3 ? state.status.now - ws : 0;
@@ -254,7 +287,7 @@
       return `<div class="tp-panel tp-progress-panel">
         <div class="tp-panel-head"><div class="tp-row">${viewPill()}<span class="tp-caption">${what}</span></div></div>
         <div class="tp-pad"><div class="tp-progress">
-          <div class="tp-progress-row"><span class="tp-figure" style="font-size:24px;line-height:28px">${paused ? "Printer paused" : "Sending over Bluetooth…"}</span><span class="tp-mono tp-muted" style="font-size:12px">${paused ? fmtTime(paused) : plural(j.total, "page")}</span></div>
+          <div class="tp-progress-row"><span class="tp-progress-title">${paused ? "Printer paused" : "Sending over Bluetooth…"}</span><span class="tp-mono tp-muted" style="font-size:12px">${paused ? fmtTime(paused) : plural(j.total, "page")}</span></div>
           <div class="tp-bar tp-bar--indeterminate"><span></span></div>
           <p class="tp-caption">${paused
             ? (state.status.ble.paper === false ? "The printer reports it's out of paper. Load a sheet; printing continues when it's ready." : "The printer has stopped taking data, usually to cool down after dark areas. It resumes on its own; this waits up to 3 minutes.")
@@ -264,7 +297,7 @@
     if (j.state === "printing") {
       const t = totals();
       const perSheet = t.sheets ? t.mm / t.sheets : 297;
-      const left = ((j.total - j.page) * perSheet) / (settings.via === "ble" ? state.status.ble_mm_per_s : state.status.usb_mm_per_s);
+      const left = ((j.total - j.page) * perSheet) / state.status.usb_mm_per_s;
       const pct = j.total ? (j.page / j.total) * 100 : 0;
       return `<div class="tp-panel tp-progress-panel">
         <div class="tp-panel-head"><div class="tp-row">${viewPill()}<span class="tp-caption">${what}</span></div><button class="tp-btn" data-action="cancel">Cancel</button></div>
@@ -274,23 +307,30 @@
         </div></div></div>`;
     }
     const msg = {
-      done: `<div class="tp-msg tp-msg--ok">Printed ${plural(j.total, "page")} of ${what}.</div>`,
+      done: j.via === "dry"
+        ? `<div class="tp-msg tp-msg--ok">Wrote ${plural(j.total, "page")} from ${what} to ${esc((state.status.dry_run || "").split("/").pop())}. Nothing was printed.</div>`
+        : `<div class="tp-msg tp-msg--ok">Printed ${plural(j.total, "page")} from ${what}.</div>`,
       cancelled: `<div class="tp-msg">Cancelled after ${plural(j.page, "page")}. The printer finishes what it already received.</div>`,
       error: `<div class="tp-msg tp-msg--error">${icon("x")}<div><strong>${j.page ? `Printing stopped after ${plural(j.page, "page")}.` : "Nothing was printed."}</strong><div class="tp-msg-detail">${esc(j.error || "unknown error")}</div>${j.via === "ble" ? '<div class="tp-msg-detail">USB is more reliable: plug in the cable, hold power ~3 s until the light is solid red, and switch the Printer panel to USB.</div>' : ""}</div></div>`,
     }[j.state] || "";
-    return `<div class="tp-panel"><div class="tp-panel-head">${msg}${dismiss}</div></div>`;
+    return `<div class="tp-panel"><div class="tp-panel-head tp-panel-head--solo">${msg}${dismiss}</div></div>`;
+  }
+
+  function viewNotice() {
+    if (!state.notice) return "";
+    return `<div class="tp-panel"><div class="tp-panel-head tp-panel-head--solo"><div class="tp-msg tp-msg--error">${icon("x")}<div>${esc(state.notice)}</div></div><button class="tp-btn tp-btn--ghost" data-action="notice-dismiss">Dismiss</button></div></div>`;
   }
 
   function viewSummary() {
     const t = totals();
-    const speedNote = settings.via === "ble" ? "over Bluetooth" : "at ~15 mm/s over USB";
+    const speedNote = settings.via === "ble" ? "over Bluetooth" : "over USB, ~15 mm/s";
     const sheetLen = { a4: "A4 · 297 mm each", letter: "Letter · 279 mm each", continuous: "Continuous, trimmed" }[settings.media];
     const long = t.seconds > 600;
+    const from = settings.copies > 1 ? `${settings.copies} copies × ${t.perCopy}` : `from ${plural(t.files, "file")}`;
     return `<div class="tp-panel tp-summary">
-      <div class="tp-stat"><span class="tp-overline">${settings.media === "continuous" ? "Pages" : "Sheets"}</span><span class="tp-figure">${t.sheets}</span><span class="tp-stat-note">from ${plural(t.files, "file")}${settings.copies > 1 ? ` · ${settings.copies} × ${t.perCopy}` : ""}</span></div>
+      <div class="tp-stat"><span class="tp-overline">${t.noun}s</span><span class="tp-figure">${t.sheets}</span><span class="tp-stat-note">${from}</span></div>
       <div class="tp-stat"><span class="tp-overline">Paper</span><span class="tp-figure">${(t.mm / 1000).toFixed(2)}<small>m</small></span><span class="tp-stat-note">${sheetLen}</span></div>
-      <div class="tp-stat"><span class="tp-overline">Time</span><span class="tp-figure">~${fmtTime(t.seconds)}</span><span class="tp-stat-note ${long ? "tp-stat-note--warn" : ""}">${long ? "Long job: " : ""}${speedNote}</span></div>
-      <div class="tp-stat"><span class="tp-overline">Copies</span><span class="tp-figure">${settings.copies}<small>×</small></span><span class="tp-stat-note">density ${settings.density} of 8</span></div>
+      <div class="tp-stat"><span class="tp-overline">Time</span><span class="tp-figure">~${fmtTime(t.seconds)}</span><span class="tp-stat-note ${long ? "tp-stat-note--warn" : ""}">${long ? "Long job, " : ""}${speedNote}</span></div>
     </div>`;
   }
 
@@ -298,13 +338,14 @@
     const j = job();
     const order = readyFiles();
     const total = order.reduce((s, f) => s + f.pages.length, 0);
-    const live = j.state === "printing" && settings.copies === 1 && j.total === total;
+    // Bluetooth sends the whole job at once, so there's no current page to point at.
+    const live = j.state === "printing" && j.via !== "ble" && j.kind !== "check" && settings.copies === 1 && j.total === total;
     let n = 0;
     const groups = state.files.filter((f) => f.status !== "error").map((f, gi) => {
       const fi = state.files.indexOf(f);
       let sheets;
       if (f.status !== "ready") {
-        sheets = `<div class="tp-sheet-wrap"><div class="tp-sheet tp-sheet--pending" style="aspect-ratio:210/297"></div><div class="tp-sheet-cap"><span>…</span></div></div>`;
+        sheets = `<div class="tp-sheet-wrap"><div class="tp-sheet tp-sheet--pending" style="aspect-ratio:210/297"></div><div class="tp-sheet-cap"><span>${f.status === "uploading" ? "Adding…" : "Rendering…"}</span></div></div>`;
       } else {
         sheets = f.pages.map((p, pi) => {
           const idx = n++;
@@ -312,15 +353,13 @@
           const tall = p.h / WIDTH_DOTS > 2.2;
           const cls = [tall && "tp-sheet--long", live && idx < j.page && "tp-sheet--done", live && idx === j.page && "tp-sheet--active",
             state.selected === f.id && !live && "tp-sheet--active"].filter(Boolean).join(" ");
-          return `<div class="tp-sheet-wrap"><button class="tp-sheet ${cls}" style="aspect-ratio:${tall ? "210/420" : ratio}" data-action="zoom" data-file="${fi}" data-page="${pi}" aria-label="Page ${idx + 1} of ${total}, ${esc(f.name)}"><img src="${thumb(f, pi)}" alt="" loading="lazy"></button><div class="tp-sheet-cap"><span>${String(idx + 1).padStart(2, "0")}</span><span>/${total}</span></div></div>`;
+          return `<div class="tp-sheet-wrap"><button class="tp-sheet ${cls}" style="aspect-ratio:${tall ? "210/420" : ratio}" data-action="zoom" data-file="${fi}" data-page="${pi}" aria-label="Page ${idx + 1} of ${total}, ${esc(f.name)}"><img src="${thumb(f, pi)}" alt="" loading="lazy" draggable="false"></button><div class="tp-sheet-cap"><span>${idx + 1} / ${total}</span></div></div>`;
         }).join("");
       }
-      const label = `${esc(f.name)}${f.status === "ready" ? ` · ${f.pages.length}` : ""}`;
-      return `${gi ? '<div class="tp-split"></div>' : ""}<div><div class="tp-file-label">${label}</div><div class="tp-roll">${sheets}</div></div>`;
+      return `${gi ? '<div class="tp-split"></div>' : ""}<div class="tp-group"><div class="tp-file-label" title="${esc(f.name)}">${esc(f.name)}</div><div class="tp-roll">${sheets}</div></div>`;
     }).join("");
-    const t = totals();
     return `<div class="tp-stack" style="gap:var(--space-3)">
-      <div class="tp-row"><span class="tp-overline">Payout</span><span class="tp-mono tp-muted" style="font-size:12px">${plural(t.perCopy, "sheet")} per copy · ${MEDIA.find((m) => m[0] === settings.media)[1].split(" ·")[0]} · ${(t.mm / 1000 / settings.copies).toFixed(2)} m</span></div>
+      <div class="tp-row" style="justify-content:space-between"><span class="tp-overline">Preview</span><span class="tp-caption">Click a ${settings.media === "continuous" ? "page" : "sheet"} to see it at print resolution</span></div>
       <div class="tp-payout"><div class="tp-roll">${groups}</div></div>
     </div>`;
   }
@@ -333,13 +372,13 @@
         ready: `<span class="tp-file-state tp-file-state--ok">Ready</span>`,
         error: `<span class="tp-file-state tp-file-state--error">${icon("x")} Failed</span>`,
       }[f.status];
-      const meta = f.status === "error" ? esc(f.error || "Couldn't render this file") : `${fmtSize(f.size)}${f.kind ? ` · ${f.kind}` : ""}`;
-      const mini = f.status === "ready" && f.pages.length ? `<span class="tp-mini"><img src="${thumb(f, 0)}" alt=""></span>` : `<span class="tp-mini"></span>`;
-      const pages = f.status === "ready" ? `${f.pages.length} pp` : "— pp";
+      const meta = f.status === "error" ? `<span class="tp-file-error">${esc(f.error || "Couldn't render this file")}</span>` : `${fmtSize(f.size)}${f.kind ? ` · ${f.kind}` : ""}`;
+      const mini = f.status === "ready" && f.pages.length ? `<span class="tp-mini"><img src="${thumb(f, 0)}" alt="" draggable="false"></span>` : `<span class="tp-mini"></span>`;
+      const pages = f.status === "ready" ? plural(f.pages.length, "page") : "";
       return `<li class="tp-file tp-file--clickable ${state.selected === f.id ? "tp-file--selected" : ""}" draggable="${!printing()}" data-index="${i}" data-action="select">
         <span class="tp-grip" title="Drag to reorder">${icon("grip")}</span>${mini}
         <div style="min-width:0"><div class="tp-file-name" title="${esc(f.name)}">${esc(f.name)}</div><div class="tp-file-meta"><span class="tp-tag">${esc(kindTag(f))}</span>${meta}</div></div>
-        ${st}<span class="tp-file-pages ${f.status === "ready" ? "" : "tp-muted"}">${pages}</span>
+        ${st}<span class="tp-file-pages">${pages}</span>
         <button class="tp-btn tp-btn--icon tp-btn--ghost" data-action="remove" data-index="${i}" aria-label="Remove ${esc(f.name)}" ${printing() ? "disabled" : ""}>${icon("x")}</button></li>`;
     }).join("");
     return `<div class="tp-panel">
@@ -352,7 +391,7 @@
     : `<div class="tp-drop" data-action="pick" role="button" tabindex="0"><div class="tp-drop-icon">${icon("up")}</div><p class="tp-drop-title">Drop files to print</p><p class="tp-drop-hint">or <span class="tp-link">choose files</span> · paste text with ⌘V</p><div class="tp-drop-types"><span class="tp-tag">pdf</span><span class="tp-tag">md</span><span class="tp-tag">txt</span><span class="tp-tag">jpg</span><span class="tp-tag">png</span></div></div>`;
 
   function viewMain() {
-    const progress = viewProgress();
+    const progress = viewNotice() + viewProgress();
     if (!state.files.length) {
       return `${progress}<div class="tp-empty"><div><h1 class="tp-display">Ready to print</h1><p class="tp-caption" style="font-size:14px;line-height:20px;margin-top:var(--space-2)">Add PDFs, Markdown, text or photos. You'll see every sheet before anything prints.</p></div>${dropZone(false)}</div>`;
     }
@@ -364,15 +403,15 @@
     const busy = state.files.some((f) => f.status === "uploading" || f.status === "rendering");
     const failed = state.files.filter((f) => f.status === "error").length;
     let reason = "", block = false;
-    if (printing()) reason = "Printing…";
+    if (printing()) reason = { check: "Checking the printer…" }[job().kind] || (job().via === "dry" ? "Writing the job to a file…" : "Printing…");
     else if (!canSend()) { reason = connection().kind === "search" ? "Looking for the printer…" : "Printer not connected: see the Printer panel"; block = true; }
     else if (!state.files.length) reason = "Add a file to print";
     else if (busy) reason = "Waiting for files to finish rendering";
     else if (!t.sheets) { reason = "Nothing printable in the queue"; block = true; }
     else if (failed) reason = `${plural(failed, "file")} failed and will be skipped`;
-    else reason = `${plural(t.sheets, "sheet")}, ${(t.mm / 1000).toFixed(2)} m of paper`;
+    else reason = `${plural(t.sheets, t.noun)}, ${(t.mm / 1000).toFixed(2)} m of paper`;
     const disabled = printing() || !canSend() || busy || !t.sheets;
-    const label = t.sheets ? `Print ${plural(t.sheets, "page")}` : "Print";
+    const label = t.sheets ? `Print ${plural(t.sheets, t.noun)}` : "Print";
     return `<span class="tp-reason ${block ? "tp-reason--block" : ""}">${reason}</span>
       <button class="tp-btn tp-btn--primary tp-btn--lg" data-action="print" ${disabled ? "disabled" : ""}>${icon("printer")} ${label} <span class="tp-kbd">⌘P</span></button>`;
   }
@@ -381,13 +420,13 @@
     const lb = state.lightbox;
     if (!lb) return "";
     const f = state.files[lb.fileIndex];
-    if (!f || !f.pages[lb.pageIndex]) return "";
+    if (!f || !f.pages[lb.pageIndex]) { state.lightbox = null; return ""; }
     const flat = readyFiles().flatMap((x) => x.pages.map((_, i) => [x, i]));
     const pos = flat.findIndex(([x, i]) => x === f && i === lb.pageIndex);
     const p = f.pages[lb.pageIndex];
     return `<div class="tp-lightbox-bar"><span>${esc(f.name)} · page ${String(pos + 1).padStart(2, "0")}/${flat.length} · ${WIDTH_DOTS} × ${p.h} dots · ${(p.h / DOTS_PER_MM).toFixed(0)} mm</span>
       <div class="tp-row"><button class="tp-btn tp-btn--icon" data-action="lb-step" data-value="-1" aria-label="Previous page" ${pos <= 0 ? "disabled" : ""}>${icon("left")}</button><button class="tp-btn tp-btn--icon" data-action="lb-step" data-value="1" aria-label="Next page" ${pos >= flat.length - 1 ? "disabled" : ""}>${icon("right")}</button><button class="tp-btn" data-action="lb-close">Close</button></div></div>
-      <div class="tp-lightbox-body" data-action="lb-close"><img src="${thumb(f, lb.pageIndex, true)}" alt="Page ${pos + 1} at printed resolution"></div>`;
+      <div class="tp-lightbox-body" data-action="lb-close"><img src="${thumb(f, lb.pageIndex, true)}" style="aspect-ratio:${WIDTH_DOTS}/${p.h};background-image:url('${thumb(f, lb.pageIndex)}')" alt="Page ${pos + 1} at printed resolution" draggable="false"></div>`;
   }
 
   // Only rewrite a region when its markup changed, so polling never steals focus or hover.
@@ -403,7 +442,7 @@
       region($("settings"), viewSettings());
       region($("main"), viewMain());
       region($("foot"), viewFoot());
-      region($("lightbox"), viewLightbox());
+      region($("lightbox"), viewLightbox());   // may close it if the page went away
       $("lightbox").hidden = !state.lightbox;
     });
   }
@@ -438,6 +477,7 @@
       case "ble-check": checkBle(); break;
       case "cancel": cancelJob(); break;
       case "retry": state.status = null; draw(); poll(); break;
+      case "notice-dismiss": state.notice = null; draw(); break;
       case "dismiss": state.dismissedJob = job().started; save("thermal.dismissed", state.dismissedJob); draw(); break;
       case "via": setSetting("via", v); break;
       case "density": setSetting("density", Number(v)); break;
@@ -458,6 +498,7 @@
       if (e.key === "Escape") { state.lightbox = null; draw(); }
       if (e.key === "ArrowRight") stepLightbox(1);
       if (e.key === "ArrowLeft") stepLightbox(-1);
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "p") e.preventDefault();
       return;
     }
     if ((e.key === "Enter" || e.key === " ") && e.target.dataset?.action === "pick") { e.preventDefault(); $("picker").click(); }

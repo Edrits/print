@@ -84,3 +84,29 @@ def test_print_with_nothing_ready_is_rejected(server):
     base, _ = server
     status, _ = call(f"{base}/api/print", "POST", {"files": ["nope"]})
     assert status == 400
+
+
+def test_render_error_names_the_file_not_the_temp_copy(server):
+    base, _ = server
+    _, body = call(f"{base}/api/files", "POST", b"%PDF-broken", {"X-Filename": "broken.pdf"})
+    uid = json.loads(body)["id"]
+    info = json.loads(call(f"{base}/api/files/{uid}/render", "POST", {})[1])
+    assert info["error"] and "phomemo-ui-" not in info["error"] and uid not in info["error"]
+
+
+def test_dry_run_never_goes_over_bluetooth(server):
+    # The browser asks for Bluetooth by default; a dry run writes the file and
+    # reports page progress like USB instead of pretending to send over the air.
+    base, out = server
+    sample = REPO / "samples" / "notes.md"
+    uid = json.loads(call(f"{base}/api/files", "POST", sample.read_bytes(),
+                          {"X-Filename": "notes.md"})[1])["id"]
+    call(f"{base}/api/files/{uid}/render", "POST", {"media": "a4"})
+    _, body = call(f"{base}/api/print", "POST", {"files": [uid], "via": "ble"})
+    assert json.loads(body)["via"] == "dry"
+    for _ in range(100):
+        info = json.loads(call(f"{base}/api/job")[1])
+        if info["state"] != "printing":
+            break
+        time.sleep(0.1)
+    assert info["state"] == "done" and info["page"] == info["total"] and out.stat().st_size
