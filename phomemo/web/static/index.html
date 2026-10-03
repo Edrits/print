@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Thermal · Phomemo M08F</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='3' y='1' width='10' height='14' rx='1' fill='%23141414'/%3E%3Crect x='5' y='11' width='6' height='2' fill='%23c2410c'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/thermal.css">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div class="tp-app">
+  <header class="tp-top">
+    <div class="tp-brand"><span class="tp-brand-mark"></span>Thermal</div>
+    <div id="pill"></div>
+  </header>
+  <main class="tp-main" id="main"></main>
+  <aside class="tp-side">
+    <section id="conn"></section>
+    <section id="settings"></section>
+  </aside>
+  <footer class="tp-foot" id="foot"></footer>
+</div>
+<input type="file" id="picker" multiple hidden
+       accept=".pdf,.md,.markdown,.txt,.text,.log,.png,.jpg,.jpeg,.gif,.bmp,.tif,.tiff,.webp">
+<div class="tp-dropveil" id="veil" hidden><div class="tp-drop tp-drop--active"><p class="tp-drop-title" id="veil-title">Release to add files</p><p class="tp-drop-hint">They'll join the end of the queue</p></div></div>
+<div class="tp-lightbox" id="lightbox" hidden></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

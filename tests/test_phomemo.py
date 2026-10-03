@@ -157,7 +157,9 @@ def test_copies_repeat_pages_not_header(samples):
     pages = render.render(str(samples / "notes.md"))
     cmds, img = decode(job.build(pages, job.JobOptions(copies=3)))
     assert [c[0] for c in cmds].count("init") == 1
-    assert img.height == 3 * spec.page_height_dots("a4")
+    sheet = spec.page_height_dots("a4")
+    # whole sheets until the last page, which ends at its content (paper sensor)
+    assert 2 * sheet < img.height < 3 * sheet
 
 
 def test_build_rejects_wrong_width():
@@ -184,7 +186,8 @@ def test_ipp_job_hook_dry_run(tmp_path, samples):
     assert "INFO:" in r.stderr
     cmds, img = decode(out.read_bytes())
     assert ("density", 7) in cmds
-    assert img.height == 2 * spec.page_height_dots("a4")
+    sheet = spec.page_height_dots("a4")
+    assert sheet < img.height <= 2 * sheet
 
 
 def test_ipp_job_hook_pads_to_loaded_sheet_not_dialog_choice(tmp_path, samples):
@@ -192,13 +195,14 @@ def test_ipp_job_hook_pads_to_loaded_sheet_not_dialog_choice(tmp_path, samples):
     out = tmp_path / "job.bin"
     hook = Path(sys.executable).with_name("phomemo-ipp-job")
     env = dict(os.environ, CONTENT_TYPE="application/pdf", IPP_MEDIA="na_letter_8.5x11in",
-               PHOMEMO_MEDIA="a4", PHOMEMO_DRY_RUN=str(out))
+               IPP_COPIES="2", PHOMEMO_MEDIA="a4", PHOMEMO_DRY_RUN=str(out))
     r = subprocess.run([str(hook), str(samples / "invoice.pdf")], env=env,
                        capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
     assert "laid out for letter, printing on a4 sheets" in r.stderr
     _, img = decode(out.read_bytes())
-    assert img.height == spec.page_height_dots("a4")
+    # copy 1 is padded to a whole A4 sheet (not Letter), so copy 2 starts past it
+    assert img.height > spec.page_height_dots("a4")
 
 
 def test_ipp_job_hook_reports_missing_printer(tmp_path, samples):
@@ -210,3 +214,59 @@ def test_ipp_job_hook_reports_missing_printer(tmp_path, samples):
                        capture_output=True, text=True)
     assert r.returncode == 1
     assert "ERROR:" in r.stderr
+
+
+# -- Bluetooth LE: decision logic only (no radio in tests) --------------------
+
+class _C:
+    def __init__(self, uuid, props):
+        self.uuid, self.properties = uuid, props
+
+
+class _S:
+    def __init__(self, *chars):
+        self.characteristics = list(chars)
+
+
+def _u(short):
+    return f"0000{short}-0000-1000-8000-00805f9b34fb"
+
+
+def test_ble_prefers_phomemo_write_characteristic():
+    from phomemo import ble
+    services = [_S(_C(_u("2a00"), ["read"])),
+                _S(_C(_u("ff01"), ["notify"]), _C(_u("ff03"), ["write-without-response"]),
+                   _C(_u("ff02"), ["write-without-response", "write"]))]
+    assert ble.pick_write_char(services).uuid == _u("ff02")
+
+
+def test_ble_falls_back_to_any_fast_write_channel():
+    from phomemo import ble
+    services = [_S(_C(_u("aa01"), ["write"]), _C(_u("aa02"), ["write-without-response"]))]
+    assert ble.pick_write_char(services).uuid == _u("aa02")
+    assert ble.pick_write_char([_S(_C(_u("bb01"), ["read", "notify"]))]) is None
+
+
+def test_ble_chunks_cover_stream_exactly():
+    from phomemo import ble
+    data = bytes(range(256)) * 10
+    parts = list(ble.chunks(data, 244))
+    assert b"".join(parts) == data and max(map(len, parts)) == 244
+
+
+@pytest.mark.parametrize("name,hit", [("M08F-1A2B", True), ("Phomemo_M08F", True),
+                                      ("AirPods Pro", False), (None, False)])
+def test_ble_printer_name_matching(name, hit):
+    from phomemo import ble
+    assert ble.looks_like_printer(name) is hit
+
+
+def test_last_sheet_ends_at_content_but_earlier_sheets_stay_whole(samples):
+    """The M08F can't print the bottom ~36 mm of a sheet (paper sensor): ending
+    the job there would leave the sheet stuck. Only the final page is trimmed."""
+    pages = render.render(str(samples / "notes.md"))
+    seq = job.sequence(pages, copies=2, media="a4")
+    sheet = spec.page_height_dots("a4")
+    assert seq[0].height == sheet
+    assert seq[-1].height < sheet
+    assert job.sequence(pages, copies=1, media="continuous")[-1].height == pages[-1].height

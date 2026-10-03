@@ -1,0 +1,18 @@
+<!-- @dsCard group="Printer" height=300 subtitle="Is the printer there or not" -->
+<!doctype html>
+<html><head><meta charset="utf-8"></head><body>
+<div class="tp-pad tp-stack">
+  <div class="tp-row">
+    <span class="tp-status"><span class="tp-dot"></span>Connected <span class="tp-via">USB</span></span>
+    <span class="tp-status tp-status--warn"><span class="tp-dot"></span>Connected <span class="tp-via">Bluetooth</span></span>
+    <span class="tp-status tp-status--busy"><span class="tp-dot"></span>Printing <span class="tp-via">3/14</span></span>
+    <span class="tp-status tp-status--off"><span class="tp-dot"></span>Not connected</span>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--space-3)">
+    <div class="tp-conn"><div class="tp-conn-glyph"><svg class="tp-icon" viewBox="0 0 16 16"><path d="M8 1.5v10M5.5 4L8 1.5 10.5 4M8 11.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3M4 6v2.5l4 2M12 5.5v2.5l-4 2"/></svg></div><div><div class="tp-conn-state"><span class="tp-dot"></span>Connected over USB</div><div class="tp-conn-detail">Phomemo M08F · /dev/cu.usbmodem1101</div></div><button class="tp-btn tp-btn--ghost">Test page</button></div>
+    <div class="tp-conn tp-conn--ble"><div class="tp-conn-glyph"><svg class="tp-icon" viewBox="0 0 16 16"><path d="M4.5 4.5l7 7L8 15V1l3.5 3.5-7 7"/></svg></div><div><div class="tp-conn-state"><span class="tp-dot"></span>Connected over Bluetooth</div><div class="tp-conn-detail">M08F-4A1C · slower, ~20 kB/s</div></div><button class="tp-btn tp-btn--ghost">Switch</button></div>
+    <div class="tp-conn tp-conn--search"><div class="tp-conn-glyph"><svg class="tp-icon" viewBox="0 0 16 16"><path d="M4.5 6V1.5h7V6M4.5 12H2.5V6.5h11V12h-2M4.5 10h7v4.5h-7z"/></svg></div><div><div class="tp-conn-state"><span class="tp-dot"></span>Looking for printer…</div><div class="tp-conn-detail">Checking USB and Bluetooth</div></div><span></span></div>
+    <div class="tp-conn tp-conn--off"><div class="tp-conn-glyph"><svg class="tp-icon" viewBox="0 0 16 16"><path d="M4.5 6V1.5h7V6M4.5 12H2.5V6.5h11V12h-2M4.5 10h7v4.5h-7zM1.5 1.5l13 13"/></svg></div><div><div class="tp-conn-state"><span class="tp-dot"></span>Printer not connected</div><div class="tp-conn-detail">Plug in USB, then hold power ~3 s until the light is solid red.</div></div><button class="tp-btn">Retry</button></div>
+  </div>
+</div>
+</body></html>

@@ -16,7 +16,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+ble = ["bleak>=0.22"]
+dev = ["pytest>=8", "bleak>=0.22"]
 
 [project.scripts]
 phomemo = "phomemo.cli:main"
@@ -28,3 +29,6 @@ include = ["phomemo*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 filterwarnings = ["ignore:builtin type .* has no __module__ attribute:DeprecationWarning"]
+
+[tool.setuptools.package-data]
+"phomemo.web" = ["static/*"]
