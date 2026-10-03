@@ -69,15 +69,33 @@
   async function addFiles(list) {
     const files = [...list].filter((f) => f.size > 0 || f.type.startsWith("text"));
     for (const file of files) {
-      const f = { id: null, name: file.name || "untitled", size: file.size, status: "uploading", pages: [], version: 0 };
+      const f = { id: null, file, name: file.name || "untitled", size: file.size, status: "uploading", pages: [], version: 0 };
       state.files.push(f);
-      draw();
-      try {
-        const info = await api("/api/files", { method: "POST", headers: { "X-Filename": encodeURIComponent(f.name) }, body: file });
-        f.id = info.id;
-        queueRender(f);
-      } catch (e) { f.status = "error"; f.error = e.message; }
-      draw();
+      await upload(f);
+    }
+  }
+
+  async function upload(f) {
+    f.id = null;
+    f.status = "uploading";
+    draw();
+    try {
+      const info = await api("/api/files", { method: "POST", headers: { "X-Filename": encodeURIComponent(f.name) }, body: f.file });
+      f.id = info.id;
+      queueRender(f);
+    } catch (e) { f.status = "error"; f.error = e.message; }
+    draw();
+  }
+
+  // The server keeps uploads in memory only. If it restarted while this page
+  // stayed open, its file ids are gone: send the files again, in queue order.
+  let instance = null;
+  async function checkInstance(id) {
+    const restarted = instance && id !== instance;
+    instance = id;              // before re-uploading, so the next poll doesn't start again
+    if (!restarted) return;
+    for (const f of [...state.files]) {
+      if (state.files.includes(f)) await upload(f);
     }
   }
 
@@ -94,6 +112,7 @@
     try {
       state.status = await api("/api/status");
       state.statusError = false;
+      checkInstance(state.status.instance);
     } catch { state.statusError = true; }
     draw();
     const printing = state.status && state.status.job.state === "printing";

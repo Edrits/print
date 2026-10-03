@@ -79,6 +79,9 @@ class Job:
 class App:
     def __init__(self, dry_run: Path | None = None, device: str | None = None):
         self.dir = Path(tempfile.mkdtemp(prefix="phomemo-ui-"))
+        # Uploads live only in this process. A page left open across a restart
+        # sees a new instance id and re-uploads its files (it still has them).
+        self.instance = uuid.uuid4().hex[:12]
         self.uploads: dict[str, Upload] = {}
         self.job = Job()
         self.dry_run = dry_run
@@ -98,7 +101,8 @@ class App:
             from ..ble import printer_state as ble_state
         except Exception:
             ble_state = {}
-        return {"usb": usb, "dry_run": str(self.dry_run) if self.dry_run else None,
+        return {"instance": self.instance,
+                "usb": usb, "dry_run": str(self.dry_run) if self.dry_run else None,
                 "ble": {"paper": ble_state.get("paper"), "paper_at": ble_state.get("paper_at"),
                         "waiting_since": ble_state.get("waiting_since")},
                 "now": time.time(),
