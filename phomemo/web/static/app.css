@@ -1,0 +1,89 @@
+/* App-only additions on top of the Thermal design system (thermal.css). */
+[hidden] { display: none !important; }
+.tp-app { height: 100vh; min-height: 0; grid-template-rows: auto minmax(0, 1fr) auto; }
+.tp-main, .tp-side { overflow-y: auto; }
+.tp-side .tp-conn { grid-template-columns: 40px 1fr; }
+.tp-side .tp-conn > .tp-btn { grid-column: 1 / -1; justify-self: start; }
+.tp-conn-detail { overflow-wrap: anywhere; }
+.tp-side .tp-seg { display: flex; }
+.tp-caption { font-size: 12px; line-height: 16px; color: var(--ink-muted); margin: 0; }
+.tp-display { font-size: 28px; line-height: 32px; font-weight: 600; letter-spacing: -0.02em; margin: 0; }
+
+/* empty state */
+.tp-empty { max-width: 560px; margin: auto; width: 100%; display: flex; flex-direction: column; gap: var(--space-6); padding: var(--space-8) 0; }
+.tp-empty .tp-drop { padding: 56px var(--space-6); cursor: pointer; }
+.tp-drop--compact { cursor: pointer; }
+.tp-drop:hover { border-color: var(--ink-muted); }
+
+/* full-window drop target */
+.tp-dropveil { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; background: color-mix(in srgb, var(--paper) 80%, transparent); padding: var(--space-8); pointer-events: none; }
+.tp-dropveil .tp-drop { width: min(560px, 100%); padding: 72px var(--space-6); box-shadow: var(--shadow-pop); }
+
+/* payout with real thumbnails */
+.tp-sheet-wrap { width: 84px; }
+.tp-sheet { width: 84px; aspect-ratio: auto; cursor: zoom-in; padding: 0; border: 0; display: block; }
+.tp-sheet img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: top; image-rendering: auto; }
+.tp-sheet--long { -webkit-mask: linear-gradient(#000 80%, transparent); mask: linear-gradient(#000 80%, transparent); }
+.tp-sheet--pending { background: var(--sheet); opacity: .5; }
+.tp-payout { max-width: 100%; }
+.tp-payout { padding-top: var(--space-4); }
+.tp-file-label { margin: 0 0 var(--space-1); }
+.tp-split { margin-top: 0; }
+
+/* queue */
+.tp-file { cursor: default; }
+.tp-file[draggable="true"] .tp-grip { cursor: grab; }
+.tp-file--dragging { opacity: .4; }
+.tp-file--over { box-shadow: inset 0 2px 0 var(--heat); }
+.tp-file--clickable { cursor: pointer; }
+.tp-mini { display: block; overflow: hidden; }
+.tp-mini img { width: 100%; height: 100%; object-fit: cover; object-position: top; display: block; }
+.tp-mini:has(img)::before { display: none; }
+.tp-file-meta { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.tp-file .tp-btn--icon { margin-right: -8px; }
+.tp-file { grid-template-columns: 16px 28px minmax(0, 1fr) auto auto auto; }
+
+/* progress */
+.tp-progress-panel .tp-panel-head { flex-wrap: wrap; }
+.tp-bar > span { transition: width .3s ease-out; }
+.tp-msg { display: flex; gap: var(--space-2); align-items: flex-start; font-size: 14px; }
+.tp-msg--error { color: var(--danger); }
+.tp-msg--ok { color: var(--ok); }
+
+/* footer */
+.tp-foot .tp-reason { font-size: 12px; line-height: 16px; color: var(--ink-muted); }
+.tp-foot .tp-reason--block { color: var(--danger); }
+
+/* lightbox */
+.tp-lightbox { position: fixed; inset: 0; z-index: 30; background: rgba(0, 0, 0, .72); display: flex; flex-direction: column; }
+.tp-lightbox-bar { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding: var(--space-3) var(--space-4); color: #f4f4f1; font: 400 12px/16px var(--font-mono); }
+.tp-lightbox-bar .tp-btn { background: transparent; color: #f4f4f1; border-color: rgba(255,255,255,.35); }
+.tp-lightbox-bar .tp-btn:hover { background: rgba(255,255,255,.12); }
+.tp-lightbox-body { flex: 1; overflow: auto; display: flex; justify-content: center; padding: 0 var(--space-4) var(--space-6); }
+.tp-lightbox-body img { width: min(840px, 100%); height: auto; align-self: flex-start; background: #fff; box-shadow: var(--shadow-pop); image-rendering: pixelated; }
+
+/* spinner dot for "searching" and "rendering" */
+@keyframes tp-pulse { 50% { opacity: .25; } }
+.tp-conn--search .tp-dot, .tp-status--busy .tp-dot, .tp-file-state--busy::before { animation: tp-pulse 1.2s ease-in-out infinite; }
+.tp-file-state--busy::before { content: ""; width: 6px; height: 6px; border-radius: 99px; background: currentColor; }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+
+/* narrow windows: settings go under the main column */
+@media (max-width: 860px) {
+  .tp-app { grid-template-columns: 1fr; grid-template-rows: auto auto auto auto; height: auto; min-height: 100vh; }
+  .tp-main, .tp-side { overflow: visible; }
+  .tp-side { border-left: 0; border-top: 1px solid var(--line); }
+  .tp-summary { grid-template-columns: repeat(2, 1fr); }
+  .tp-stat:nth-child(2) { border-right: 0; }
+  .tp-stat:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+  .tp-foot { position: sticky; bottom: 0; flex-wrap: wrap; }
+  .tp-main, .tp-top, .tp-foot { padding-left: var(--space-4); padding-right: var(--space-4); }
+}
+
+.tp-msg-detail { white-space: pre-line; color: var(--ink); font-size: 13px; line-height: 18px; margin-top: var(--space-1); }
+.tp-bar--indeterminate > span { width: 30%; animation: tp-slide 1.4s ease-in-out infinite; }
+@keyframes tp-slide { from { left: -30%; } to { left: 100%; } }
+
+.tp-paper { font-family: var(--font-sans); font-weight: 500; }
+.tp-paper--ok { color: var(--ok); }
+.tp-paper--out { color: var(--danger); }

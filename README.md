@@ -53,6 +53,17 @@ phomemo preview notes.md --open        # PNGs at exactly the printed dots
 phomemo print notes.md --dry-run job.bin
 ```
 
+## In the browser
+
+```bash
+phomemo ui
+```
+
+Opens a local print screen at http://127.0.0.1:8632. Drop in files (or paste
+text), see every sheet before it prints, with page count, metres of paper and
+time, and check that the printer is connected. Add `--dry-run job.bin` to try it
+without a printer. It only listens on this Mac.
+
 ## In every app's print dialog
 
 ```bash

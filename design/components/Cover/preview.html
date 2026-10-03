@@ -1,0 +1,47 @@
+<!-- @dsCard height=288 -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Thermal</title>
+<style>
+  html, body { margin:0; height:100%; }
+  body { background:var(--paper); color:var(--ink); font-family:var(--font-sans); overflow:hidden; }
+  .cover { position:relative; height:288px; overflow:hidden; }
+  .art { position:absolute; top:0; left:480px; width:480px; height:288px; overflow:hidden; }
+  .art svg { display:block; width:480px; height:288px; }
+  .deep { fill:var(--ink); } .heat { fill:var(--heat); } .tint { fill:var(--heat-soft); } .sheet { fill:var(--sheet); } .dot { fill:var(--sheet-ink); }
+  .blk { rx:var(--radius-md); } .pap { rx:var(--radius-xs); }
+  .words { position:absolute; left:32px; bottom:32px; max-width:440px; }
+  .name { margin:0; font-size:104px; line-height:.92; font-weight:600; letter-spacing:-.03em; color:var(--ink); }
+  .tag { margin:12px 0 0 4px; font-size:14px; line-height:20px; color:var(--ink-muted); }
+</style>
+</head>
+<body>
+<div class="cover">
+<div class="art" aria-hidden="true">
+<svg viewBox="0 0 480 288" width="480" height="288">
+<!--
+  blocks      heat-soft 272 wide bleeding off top, right and bottom (the tray) · ink 240×72 bled off the top (the printer) · heat 208×8 (the head line, the one accent) · sheet 176 wide feeding off the bottom · a second ink 128×120 and heat 128×88 on the left (identity: ink and heat)
+  arrangement a printer slab over a sheet feeding down out of the tray; a short stack of ink and heat left of it
+  pattern     a dot raster at space-2 pitch in sheet-ink: "thermal paper has no grey", every mark is a dot. Three printed lines, the rest of the sheet still blank
+  scales      sides in space-2 multiples; gutters space-4; pitch space-2; corners radius-md (blocks), radius-xs (sheet)
+-->
+<rect class="tint" x="208" y="0" width="272" height="288"/>
+<rect class="deep blk" x="224" y="-16" width="240" height="88" rx="10"/>
+<rect class="heat" x="240" y="72" width="208" height="8"/>
+<rect class="sheet pap" x="256" y="80" width="176" height="224" rx="2"/>
+<rect class="heat blk" x="40" y="32" width="152" height="88" rx="10"/>
+<rect class="deep blk" x="40" y="136" width="152" height="120" rx="10"/>
+<g class="dot">
+<circle cx="272" cy="104" r="2"/><circle cx="280" cy="104" r="2"/><circle cx="288" cy="104" r="2"/><circle cx="296" cy="104" r="2"/><circle cx="304" cy="104" r="2"/><circle cx="312" cy="104" r="2"/><circle cx="320" cy="104" r="2"/><circle cx="328" cy="104" r="2"/><circle cx="336" cy="104" r="2"/><circle cx="344" cy="104" r="2"/>
+<circle cx="272" cy="128" r="2"/><circle cx="280" cy="128" r="2"/><circle cx="288" cy="128" r="2"/><circle cx="296" cy="128" r="2"/><circle cx="304" cy="128" r="2"/><circle cx="312" cy="128" r="2"/><circle cx="320" cy="128" r="2"/><circle cx="328" cy="128" r="2"/><circle cx="336" cy="128" r="2"/><circle cx="344" cy="128" r="2"/><circle cx="352" cy="128" r="2"/><circle cx="360" cy="128" r="2"/><circle cx="368" cy="128" r="2"/><circle cx="376" cy="128" r="2"/><circle cx="384" cy="128" r="2"/><circle cx="392" cy="128" r="2"/><circle cx="400" cy="128" r="2"/><circle cx="408" cy="128" r="2"/><circle cx="416" cy="128" r="2"/>
+<circle cx="272" cy="144" r="2"/><circle cx="280" cy="144" r="2"/><circle cx="288" cy="144" r="2"/><circle cx="296" cy="144" r="2"/><circle cx="304" cy="144" r="2"/><circle cx="312" cy="144" r="2"/><circle cx="320" cy="144" r="2"/><circle cx="328" cy="144" r="2"/><circle cx="336" cy="144" r="2"/><circle cx="344" cy="144" r="2"/><circle cx="352" cy="144" r="2"/><circle cx="360" cy="144" r="2"/><circle cx="368" cy="144" r="2"/><circle cx="376" cy="144" r="2"/>
+<circle cx="272" cy="160" r="2"/><circle cx="280" cy="160" r="2"/><circle cx="288" cy="160" r="2"/><circle cx="296" cy="160" r="2"/><circle cx="304" cy="160" r="2"/><circle cx="312" cy="160" r="2"/><circle cx="320" cy="160" r="2"/><circle cx="328" cy="160" r="2"/><circle cx="336" cy="160" r="2"/><circle cx="344" cy="160" r="2"/><circle cx="352" cy="160" r="2"/><circle cx="360" cy="160" r="2"/><circle cx="368" cy="160" r="2"/><circle cx="376" cy="160" r="2"/><circle cx="384" cy="160" r="2"/><circle cx="392" cy="160" r="2"/><circle cx="400" cy="160" r="2"/>
+</g>
+</svg>
+</div>
+<div class="words"><h1 class="name">Thermal</h1><p class="tag">A print interface for A4 thermal paper. Every sheet, before it feeds.</p></div>
+</div>
+</body>
+</html>

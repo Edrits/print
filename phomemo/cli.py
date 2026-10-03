@@ -1,4 +1,4 @@
-"""Command-line interface: `phomemo print|preview|test|devices|serve`."""
+"""Command-line interface: `phomemo print|preview|test|devices|serve|ui`."""
 from __future__ import annotations
 
 import argparse
@@ -41,6 +41,11 @@ def _device_args(p: argparse.ArgumentParser) -> None:
     g.add_argument("--device", help="serial device; default autodetects the M08F")
     g.add_argument("--dry-run", nargs="?", const="-", metavar="FILE",
                    help="don't print; optionally save the raw ESC/POS job to FILE")
+    g.add_argument("--ble", nargs="?", const="auto", metavar="NAME_OR_ID",
+                   help="send over Bluetooth LE instead of USB (experimental; run "
+                        "from Terminal.app). Optionally name the printer")
+    g.add_argument("--ble-rate", type=int, metavar="BYTES_PER_S",
+                   help="Bluetooth pacing (default 20000); lower it if output tears")
 
 
 def _opts(a: argparse.Namespace) -> render.RenderOptions:
@@ -71,12 +76,14 @@ def _send(data: bytes, a: argparse.Namespace) -> None:
     dry = a.dry_run
     target = None if dry in (None, "-") else Path(dry)
     with transport.open_port(device=a.device, dry_run=dry is not None,
-                             dry_run_path=target) as port:
+                             dry_run_path=target, ble=a.ble, ble_rate=a.ble_rate,
+                             ble_eject=spec.page_height_dots(getattr(a, "media", "a4")) is not None
+                             ) as port:
         port.send(data)
 
 
 def cmd_print(a: argparse.Namespace) -> int:
-    if a.dry_run is None and not a.device:
+    if a.dry_run is None and not a.device and a.ble is None:
         a.device = transport.autodetect()   # fail before rendering, not after
     rendered = _render_all(a)
     pages = [p for _, ps in rendered for p in ps]
@@ -84,7 +91,8 @@ def cmd_print(a: argparse.Namespace) -> int:
         _save_previews(rendered, Path(a.preview))
     data = job.build(pages, job.JobOptions(density=a.density, feed=a.feed, cut=a.cut,
                                            copies=a.copies), media=a.media)
-    where = "dry run" if a.dry_run is not None else a.device
+    where = "dry run" if a.dry_run is not None else \
+        (f"Bluetooth ({a.ble})" if a.ble is not None else a.device)
     print(f"{len(pages)} page(s), {len(data):,} bytes -> {where}", file=sys.stderr)
     _send(data, a)
     return 0
@@ -100,7 +108,7 @@ def cmd_preview(a: argparse.Namespace) -> int:
 
 
 def cmd_test(a: argparse.Namespace) -> int:
-    if a.dry_run is None and not a.device and not a.preview_only:
+    if a.dry_run is None and not a.device and not a.preview_only and a.ble is None:
         a.device = transport.autodetect()
     page = testpage.build(a.density)
     if a.preview:
@@ -131,10 +139,22 @@ def cmd_devices(a: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_ble_scan(a: argparse.Namespace) -> int:
+    import asyncio
+    from . import ble
+    return asyncio.run(ble.scan(timeout=a.timeout, probe=a.probe))
+
+
 def cmd_serve(a: argparse.Namespace) -> int:
     return ipp.serve(name=a.name, port=a.port, density=a.density, verbose=a.verbose,
                      dry_run=Path(a.dry_run) if a.dry_run else None, device=a.device,
                      media=a.media)
+
+
+def cmd_ui(a: argparse.Namespace) -> int:
+    from . import web
+    return web.serve(port=a.port, open_browser=not a.no_open, device=a.device,
+                     dry_run=Path(a.dry_run) if a.dry_run else None)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -170,6 +190,12 @@ def build_parser() -> argparse.ArgumentParser:
     pd.add_argument("--all", action="store_true", help="list every serial port")
     pd.set_defaults(func=cmd_devices)
 
+    pb = sub.add_parser("ble-scan", help="find the printer over Bluetooth LE (run in Terminal.app)")
+    pb.add_argument("--probe", action="store_true",
+                    help="connect and list its GATT services (read-only)")
+    pb.add_argument("--timeout", type=float, default=10.0)
+    pb.set_defaults(func=cmd_ble_scan)
+
     ps = sub.add_parser("serve", help="appear as a printer in every macOS print dialog")
     ps.add_argument("--name", default="Phomemo M08F")
     ps.add_argument("--port", type=int, default=8631)
@@ -180,6 +206,13 @@ def build_parser() -> argparse.ArgumentParser:
     ps.add_argument("--dry-run", metavar="FILE", help="write each job to FILE instead of printing")
     ps.add_argument("-v", "--verbose", action="store_true")
     ps.set_defaults(func=cmd_serve)
+
+    pu = sub.add_parser("ui", help="open a local web interface to upload, preview and print")
+    pu.add_argument("--port", type=int, default=8632)
+    pu.add_argument("--no-open", action="store_true", help="don't open the browser")
+    pu.add_argument("--device", help="serial device; default autodetects at each job")
+    pu.add_argument("--dry-run", metavar="FILE", help="write each job to FILE instead of printing")
+    pu.set_defaults(func=cmd_ui)
     return p
 
 
@@ -190,7 +223,7 @@ def main(argv: list[str] | None = None) -> int:
     except transport.PrinterNotFound as e:
         print(e, file=sys.stderr)
         return 2
-    except (ValueError, FileNotFoundError) as e:
+    except (ValueError, FileNotFoundError, ConnectionError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
 

@@ -17,6 +17,22 @@ class JobOptions:
     copies: int = 1
 
 
+# The M08F's paper sensor sits ahead of the print head: once a sheet's trailing
+# edge passes it (about 261 of 297 mm down an A4 sheet, measured 2026-10-03) the
+# printer stops and waits for the next sheet, so the last ~36 mm can't print.
+# Blank lines sent for that zone keep the job open and the sheet stuck halfway.
+# The final page therefore ends where its content does.
+END_MARGIN_MM = 4
+
+
+def sequence(pages: Sequence[Image.Image], copies: int, media: str):
+    """Pages in send order. On sheets, the very last one is trimmed to its content."""
+    out = [p for _ in range(max(1, copies)) for p in pages]
+    if out and spec.page_height_dots(media) is not None:
+        out[-1] = raster.trim_bottom(out[-1], keep=spec.mm_to_dots(END_MARGIN_MM))
+    return out
+
+
 def build(pages: Sequence[Image.Image], opts: JobOptions, media: str = "a4") -> bytes:
     for i, page in enumerate(pages):
         if page.mode != "1" or page.width != spec.WIDTH_DOTS:
@@ -28,10 +44,9 @@ def build(pages: Sequence[Image.Image], opts: JobOptions, media: str = "a4") -> 
     out = bytearray()
     out += escpos.initialize()
     out += escpos.density(opts.density)
-    for _ in range(max(1, opts.copies)):
-        for page in pages:
-            for wb, h, data in raster.bands(page):
-                out += escpos.raster_block(wb, h, data)
+    for page in sequence(pages, opts.copies, media):
+        for wb, h, data in raster.bands(page):
+            out += escpos.raster_block(wb, h, data)
     out += escpos.feed(feed)
     out += escpos.cut(opts.cut)
     return bytes(out)
