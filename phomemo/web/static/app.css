@@ -87,3 +87,6 @@
 .tp-paper { font-family: var(--font-sans); font-weight: 500; }
 .tp-paper--ok { color: var(--ok); }
 .tp-paper--out { color: var(--danger); }
+
+.tp-switch { background: none; border: 0; padding: 0; font: 400 12px/16px var(--font-sans); color: var(--ink-muted); align-self: flex-start; }
+.tp-switch:hover { color: var(--ink); }

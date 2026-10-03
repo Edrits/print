@@ -25,7 +25,7 @@
 
   // ---- state ---------------------------------------------------------------
 
-  const defaults = { media: "a4", density: 5, dither: null, copies: 1, fit: "page", via: "usb" };
+  const defaults = { media: "a4", density: 5, dither: null, copies: 1, fit: "page", via: "ble" };     // Bluetooth first; USB is the fallback
   const settings = Object.assign({}, defaults, load("thermal.settings"));
   const state = {
     files: [],            // {id, name, kind, size, status: uploading|rendering|ready|error, error, pages:[{h}], version}
@@ -183,7 +183,12 @@
     const c = connection();
     switch (c.kind) {
       case "usb": return `<span class="tp-status"><span class="tp-dot"></span>Connected <span class="tp-via">USB</span></span>`;
-      case "ble": return `<span class="tp-status tp-status--warn"><span class="tp-dot"></span>Bluetooth <span class="tp-via">checked at print</span></span>`;
+      case "ble": {
+        const paper = state.status?.ble?.paper;
+        if (paper === true) return `<span class="tp-status"><span class="tp-dot"></span>Paper loaded <span class="tp-via">Bluetooth</span></span>`;
+        if (paper === false) return `<span class="tp-status tp-status--off"><span class="tp-dot"></span>No paper <span class="tp-via">Bluetooth</span></span>`;
+        return `<span class="tp-status"><span class="tp-dot"></span>Ready <span class="tp-via">Bluetooth</span></span>`;
+      }
       case "dry": return `<span class="tp-status tp-status--warn"><span class="tp-dot"></span>Dry run <span class="tp-via">no printer</span></span>`;
       case "search": return `<span class="tp-status tp-status--busy"><span class="tp-dot"></span>Looking for printer…</span>`;
       case "lost": return `<span class="tp-status tp-status--off"><span class="tp-dot"></span>App server stopped</span>`;
@@ -200,13 +205,15 @@
     switch (c.kind) {
       case "usb": html = card("", "usb", "Connected over USB", `Phomemo M08F · ${esc(c.detail)}`, test); break;
       case "dry": html = card("tp-conn--ble", "file", "Dry run", `Nothing prints. Jobs are saved to ${esc(c.detail.split("/").pop())}`, test); break;
-      case "ble": html = card("tp-conn--ble", "ble", "Bluetooth (experimental)", `Printer is in Bluetooth mode (blinking blue). Check the link first: it uses no paper.${paperLine()}`, `<div class="tp-row" style="grid-column:1/-1;gap:var(--space-2)"><button class="tp-btn" data-action="ble-check" ${printing() ? "disabled" : ""}>Check connection</button>${test}</div>`); break;
-      case "search": html = card("tp-conn--search", "printer", "Looking for printer…", "Checking USB"); break;
+      case "ble": html = card("", "ble", "Bluetooth", `Phomemo M08F, connects when you print. Load a sheet first: the light turns green.${paperLine()}`, `<div class="tp-row" style="grid-column:1/-1;gap:var(--space-2)"><button class="tp-btn" data-action="ble-check" ${printing() ? "disabled" : ""}>Check printer</button>${test}</div>`); break;
+      case "search": html = card("tp-conn--search", "printer", "Starting…", "Connecting to the app server"); break;
       case "lost": html = card("tp-conn--off", "printerOff", "Lost the app server", "Run <code>phomemo ui</code> again in Terminal, then reload."); break;
-      default: html = card("tp-conn--off", "printerOff", "Printer not connected", "Plug in USB, then hold the power button ~3 s until the light is solid red. Blinking blue means Bluetooth mode.", `<button class="tp-btn" data-action="retry">Check again</button>`);
+      default: html = card("tp-conn--off", "printerOff", "No USB printer", "Plug in the cable, then hold the power button ~3 s until the light is solid red.", `<button class="tp-btn" data-action="retry">Check again</button>`);
     }
-    const seg = [["usb", "USB"], ["ble", "Bluetooth"]].map(([v, l]) => `<button data-action="via" data-value="${v}" aria-pressed="${settings.via === v}">${l}</button>`).join("");
-    return `<div class="tp-stack" style="gap:var(--space-3)"><div class="tp-overline">Printer</div>${html}<div class="tp-seg" role="group" aria-label="Connection">${seg}</div></div>`;
+    const other = settings.via === "ble"
+      ? `<button class="tp-link tp-switch" data-action="via" data-value="usb">Use USB instead</button>`
+      : `<button class="tp-link tp-switch" data-action="via" data-value="ble">Back to Bluetooth</button>`;
+    return `<div class="tp-stack" style="gap:var(--space-3)"><div class="tp-overline">Printer</div>${html}${other}</div>`;
   }
 
   // Paper state is only known from what the printer last reported over Bluetooth.
@@ -242,10 +249,10 @@
     const what = j.files.length === 1 ? esc(j.files[0]) : plural(j.files.length, "file");
     const dismiss = `<button class="tp-btn tp-btn--ghost" data-action="dismiss">Dismiss</button>`;
     if (j.kind === "check") {
-      if (j.state === "printing") return `<div class="tp-panel"><div class="tp-pad tp-stack" style="gap:var(--space-3)"><div class="tp-progress-row"><span class="tp-heading" style="font-weight:600">Checking Bluetooth…</span><span class="tp-caption">usually 10–20 s</span></div><div class="tp-bar tp-bar--indeterminate"><span></span></div><p class="tp-caption">Finding the printer, connecting and sending a reset command. Nothing prints.</p></div></div>`;
+      if (j.state === "printing") return `<div class="tp-panel"><div class="tp-pad tp-stack" style="gap:var(--space-3)"><div class="tp-progress-row"><span class="tp-heading" style="font-weight:600">Checking the printer…</span><span class="tp-caption">up to ~25 s</span></div><div class="tp-bar tp-bar--indeterminate"><span></span></div><p class="tp-caption">Connecting over Bluetooth and asking whether paper is loaded. The printer is slow to answer just after connecting. Nothing prints.</p></div></div>`;
       const body = j.state === "done"
-        ? `<div class="tp-msg tp-msg--ok"><div><strong>Bluetooth works.</strong><div class="tp-msg-detail">Connected and the printer answered. ${state.status?.ble?.paper === true ? "Paper is loaded." : state.status?.ble?.paper === false ? "No paper: load a sheet (the light turns green) before printing." : "It didn't say whether paper is loaded."} Nothing was printed.</div></div></div>`
-        : `<div class="tp-msg tp-msg--error">${icon("x")}<div><strong>Bluetooth check failed.</strong><div class="tp-msg-detail">${esc(j.error || "unknown error")}</div></div></div>`;
+        ? `<div class="tp-msg tp-msg--ok"><div><strong>Printer found.</strong><div class="tp-msg-detail">Connected and the printer answered. ${state.status?.ble?.paper === true ? "Paper is loaded." : state.status?.ble?.paper === false ? "No paper: load a sheet (the light turns green) before printing." : "It didn't say whether paper is loaded."} Nothing was printed.</div></div></div>`
+        : `<div class="tp-msg tp-msg--error">${icon("x")}<div><strong>Couldn't reach the printer.</strong><div class="tp-msg-detail">${esc(j.error || "unknown error")}</div></div></div>`;
       return `<div class="tp-panel"><div class="tp-panel-head">${body}${dismiss}</div></div>`;
     }
     const ws = state.status?.ble?.waiting_since;

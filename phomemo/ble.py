@@ -437,7 +437,10 @@ async def _send_once(data: bytes, dev, name, rate: int, eject: bool, require_pap
             size = max(20, min(size, credits.max_packet))
         print(f"  flow control: {'printer credits' if flow else f'paced at {rate:,} B/s'}",
               file=sys.stderr, flush=True)
-        paper = await ask_paper(client, char, credits, flow)
+        # A connection check (require_paper=False) exists to report paper, so it
+        # waits out the printer's slow first answer; a print waits only briefly.
+        paper = await ask_paper(client, char, credits, flow,
+                                timeout=1.0 if require_paper else 20.0)
         print(f"  paper: {'loaded' if paper else 'none' if paper is False else 'unknown (no reply)'}",
               file=sys.stderr, flush=True)
         if paper is False and require_paper:
