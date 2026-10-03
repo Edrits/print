@@ -134,7 +134,8 @@ class App:
 
     def _check(self, job: Job):
         try:
-            with transport.open_port(ble="auto", ble_require_paper=False) as port:
+            with transport.open_port(ble="auto", ble_require_paper=False,
+                                     ble_isolate=True) as port:
                 port.send(escpos.initialize())
             job.state = "done"
         except Exception as e:
@@ -149,7 +150,8 @@ class App:
                 device = self.device or transport.autodetect()
             with transport.open_port(device=device, dry_run_path=self.dry_run,
                                      dry_run=self.dry_run is not None, ble=ble,
-                                     ble_eject=spec.page_height_dots(media) is not None) as port:
+                                     ble_eject=spec.page_height_dots(media) is not None,
+                                     ble_isolate=True) as port:
                 port.send(escpos.initialize() + escpos.density(density))
                 for page in jobmod.sequence(pages, copies, media):
                     if job.cancel.is_set():

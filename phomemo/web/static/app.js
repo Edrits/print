@@ -184,10 +184,12 @@
     switch (c.kind) {
       case "usb": return `<span class="tp-status"><span class="tp-dot"></span>Connected <span class="tp-via">USB</span></span>`;
       case "ble": {
+        const seen = lastContact();
+        if (seen && !seen.ok) return `<span class="tp-status tp-status--off"><span class="tp-dot"></span>Printer not found <span class="tp-via">Bluetooth</span></span>`;
+        if (!seen) return `<span class="tp-status tp-status--idle"><span class="tp-dot"></span>Not checked yet <span class="tp-via">Bluetooth</span></span>`;
         const paper = state.status?.ble?.paper;
-        if (paper === true) return `<span class="tp-status"><span class="tp-dot"></span>Paper loaded <span class="tp-via">Bluetooth</span></span>`;
         if (paper === false) return `<span class="tp-status tp-status--off"><span class="tp-dot"></span>No paper <span class="tp-via">Bluetooth</span></span>`;
-        return `<span class="tp-status"><span class="tp-dot"></span>Ready <span class="tp-via">Bluetooth</span></span>`;
+        return `<span class="tp-status"><span class="tp-dot"></span>${paper ? "Paper loaded" : "Printer found"} <span class="tp-via">${seen.when}</span></span>`;
       }
       case "dry": return `<span class="tp-status tp-status--warn"><span class="tp-dot"></span>Dry run <span class="tp-via">no printer</span></span>`;
       case "search": return `<span class="tp-status tp-status--busy"><span class="tp-dot"></span>Looking for printer…</span>`;
@@ -205,7 +207,15 @@
     switch (c.kind) {
       case "usb": html = card("", "usb", "Connected over USB", `Phomemo M08F · ${esc(c.detail)}`, test); break;
       case "dry": html = card("tp-conn--ble", "file", "Dry run", `Nothing prints. Jobs are saved to ${esc(c.detail.split("/").pop())}`, test); break;
-      case "ble": html = card("", "ble", "Bluetooth", `Phomemo M08F, connects when you print. Load a sheet first: the light turns green.${paperLine()}`, `<div class="tp-row" style="grid-column:1/-1;gap:var(--space-2)"><button class="tp-btn" data-action="ble-check" ${printing() ? "disabled" : ""}>Check printer</button>${test}</div>`); break;
+      case "ble": {
+        const seen = lastContact();
+        const [cls, title, detail] = !seen
+          ? ["tp-conn--idle", "Not checked yet", "Phomemo M08F over Bluetooth. Turn it on (blinking blue), load a sheet (light turns green), then Check printer or just print."]
+          : !seen.ok
+            ? ["tp-conn--off", "Printer not found", "Turn it on (blinking blue) and keep it nearby, then press Check printer."]
+            : ["", "Printer found", `Last reached ${seen.when}. It connects again when you print.${paperLine()}`];
+        html = card(cls, "ble", title, detail, `<div class="tp-row" style="grid-column:1/-1;gap:var(--space-2)"><button class="tp-btn" data-action="ble-check" ${printing() ? "disabled" : ""}>Check printer</button>${test}</div>`); break;
+      }
       case "search": html = card("tp-conn--search", "printer", "Starting…", "Connecting to the app server"); break;
       case "lost": html = card("tp-conn--off", "printerOff", "Lost the app server", "Run <code>phomemo ui</code> again in Terminal, then reload."); break;
       default: html = card("tp-conn--off", "printerOff", "No USB printer", "Plug in the cable, then hold the power button ~3 s until the light is solid red.", `<button class="tp-btn" data-action="retry">Check again</button>`);
@@ -214,6 +224,16 @@
       ? `<button class="tp-link tp-switch" data-action="via" data-value="usb">Use USB instead</button>`
       : `<button class="tp-link tp-switch" data-action="via" data-value="ble">Back to Bluetooth</button>`;
     return `<div class="tp-stack" style="gap:var(--space-3)"><div class="tp-overline">Printer</div>${html}${other}</div>`;
+  }
+
+  // Over Bluetooth the printer is only contacted during a check or a print, so
+  // "reachable" is the outcome of the last of those, not a live connection.
+  function lastContact() {
+    const j = job();
+    if (j.via !== "ble" || !j.started || j.state === "printing" || j.state === "idle") return null;
+    const unreachable = j.state === "error" && /No Bluetooth printer found|keeps dropping|couldn't hold a connection|Bluetooth crashed/i.test(j.error || "");
+    const ago = Math.max(0, Math.round((state.status.now - j.started) / 60));
+    return { ok: !unreachable, when: ago < 1 ? "just now" : `${ago} min ago` };
   }
 
   // Paper state is only known from what the printer last reported over Bluetooth.

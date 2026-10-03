@@ -144,6 +144,9 @@ async def _discover(timeout: float):
     raise ConnectionError(f"Bluetooth error: {msg}") from last
 
 
+_DELEGATE = None
+
+
 async def _system_connected():
     """Printers macOS itself is already connected to (e.g. after pairing in
     System Settings). Connected peripherals stop advertising, so a scan can't
@@ -155,15 +158,21 @@ async def _system_connected():
     from bleak.exc import BleakError
     from CoreBluetooth import CBUUID
 
-    for _ in range(8):                      # same first-run prompt race as _discover
+    global _DELEGATE
+    # One delegate per process, kept for good. A fresh one per call was dropped
+    # afterwards, and bleak removes its KVO observer only when Python collects
+    # it; CoreBluetooth can notify it mid-teardown, which aborts the whole
+    # process with an NSException (seen in a long-running `phomemo ui`).
+    delegate = _DELEGATE
+    for _ in range(8 if delegate is None else 0):   # same first-run prompt race as _discover
         try:
-            delegate = CentralManagerDelegate.alloc().init()
+            delegate = _DELEGATE = CentralManagerDelegate.alloc().init()
             break
         except BleakError as e:
             if "turned off" not in str(e):
                 return []
             await asyncio.sleep(2.0)
-    else:
+    if delegate is None:
         return []
     uuids = [CBUUID.UUIDWithString_(u) for u in DATA_SERVICES + ["1812"]]
     peripherals = delegate.central_manager.retrieveConnectedPeripheralsWithServices_(uuids)
@@ -495,17 +504,73 @@ async def _send_once(data: bytes, dev, name, rate: int, eject: bool, require_pap
 
 
 class BlePort:
-    """Same .send()/.close() shape as the serial port. Buffers, then transmits."""
+    """Same .send()/.close() shape as the serial port. Buffers, then transmits.
+
+    isolate: send from a child process (`phomemo.ble_job`). CoreBluetooth can
+    abort a process outright; for a long-running server that must cost one
+    job, not the server. The child also gives Bluetooth its own main thread."""
 
     def __init__(self, target: str | None, rate: int = DEFAULT_RATE, eject: bool = False,
-                 require_paper: bool = True):
+                 require_paper: bool = True, isolate: bool = False):
         self.target, self.rate, self.buffer = target, rate, bytearray()
-        self.eject, self.require_paper = eject, require_paper
+        self.eject, self.require_paper, self.isolate = eject, require_paper, isolate
 
     def send(self, data: bytes) -> None:
         self.buffer += data
 
     def close(self) -> None:
-        if self.buffer:
+        if not self.buffer:
+            return
+        if self.isolate:
+            run_isolated(bytes(self.buffer), self.target, self.rate, self.eject,
+                         self.require_paper)
+        else:
             asyncio.run(send(bytes(self.buffer), self.target, self.rate, eject=self.eject,
                              require_paper=self.require_paper))
+
+
+JOB_CMD = [sys.executable, "-m", "phomemo.ble_job"]   # tests point this elsewhere
+
+
+def run_isolated(data: bytes, target, rate: int, eject: bool, require_paper: bool) -> None:
+    """Run send() in a child process. Its stderr (progress, printer> lines)
+    passes straight through; stdout carries `STATE {json}` updates for
+    printer_state and a final `ERROR message` on failure."""
+    import json
+    import subprocess
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(suffix=".bin", delete=False) as f:
+        f.write(data)
+    args = JOB_CMD + [f.name, "--rate", str(rate)]
+    if target:
+        args += ["--target", target]
+    if eject:
+        args.append("--eject")
+    if not require_paper:
+        args.append("--no-require-paper")
+    error = None
+    try:
+        proc = subprocess.Popen(args, stdout=subprocess.PIPE, text=True)
+        for line in proc.stdout:
+            kind, _, rest = line.rstrip("\n").partition(" ")
+            if kind == "STATE":
+                printer_state.update(json.loads(rest))
+            elif kind == "ERROR":
+                error = rest
+        code = proc.wait()
+    finally:
+        printer_state["waiting_since"] = None
+        try:
+            import os
+            os.unlink(f.name)
+        except OSError:
+            pass
+    if error:
+        raise ConnectionError(error)
+    if code < 0:      # killed by a signal: CoreBluetooth aborts with SIGABRT
+        raise ConnectionError(
+            "Bluetooth crashed in macOS (CoreBluetooth). The print screen is still running; "
+            "if the sheet is stuck, pull it out, then print again.")
+    if code:
+        raise ConnectionError(f"Bluetooth job failed (exit code {code}).")
