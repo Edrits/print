@@ -13,6 +13,8 @@ import io
 import json
 import queue
 import re
+import shutil
+import signal
 import sys
 import tempfile
 import threading
@@ -77,7 +79,10 @@ class Job:
 
 
 class App:
-    def __init__(self, dry_run: Path | None = None, device: str | None = None):
+    def __init__(self, dry_run: Path | None = None, device: str | None = None,
+                 from_app: bool = False):
+        self.from_app = from_app          # started by Thermal.app, not Terminal
+        self.last_seen = time.monotonic() # any request: an open page polls every 2 s
         self.dir = Path(tempfile.mkdtemp(prefix="phomemo-ui-"))
         # Uploads live only in this process. A page left open across a restart
         # sees a new instance id and re-uploads its files (it still has them).
@@ -101,7 +106,7 @@ class App:
             from ..ble import printer_state as ble_state
         except Exception:
             ble_state = {}
-        return {"instance": self.instance,
+        return {"instance": self.instance, "from_app": self.from_app,
                 "usb": usb, "dry_run": str(self.dry_run) if self.dry_run else None,
                 "ble": {"paper": ble_state.get("paper"), "paper_at": ble_state.get("paper_at"),
                         "waiting_since": ble_state.get("waiting_since")},
@@ -172,6 +177,12 @@ class App:
         except Exception as e:   # surfaced to the browser, not the console
             job.state, job.error = "error", str(e).strip()
 
+    def idle_for(self) -> float:
+        """Seconds since the last request, or 0 while a job is printing."""
+        if self.job.state == "printing":
+            return 0.0
+        return time.monotonic() - self.last_seen
+
     # --- files ---------------------------------------------------------------
 
     def add(self, name: str, body: bytes) -> Upload:
@@ -234,6 +245,10 @@ def _first_line(e: Exception) -> str:
 class Handler(BaseHTTPRequestHandler):
     app: App
     server_version = "phomemo-ui"
+
+    def parse_request(self) -> bool:
+        self.app.last_seen = time.monotonic()
+        return super().parse_request()
 
     def log_message(self, fmt, *args):   # quiet unless something fails
         if args and str(args[1])[:1] in "45":
@@ -373,8 +388,12 @@ def _clamp(v, lo: int, hi: int, default: int) -> int:
 
 
 def serve(port: int = 8632, open_browser: bool = True, dry_run: Path | None = None,
-          device: str | None = None) -> int:
-    app = App(dry_run=dry_run, device=device)
+          device: str | None = None, idle_exit: float | None = None,
+          from_app: bool = False) -> int:
+    """Run until Ctrl-C or SIGTERM (Thermal.app's Quit), or, with idle_exit,
+    until no page has been open for that many seconds. Hidden tabs still poll
+    at least once a minute, so idle_exit should be well above 60."""
+    app = App(dry_run=dry_run, device=device, from_app=from_app)
     handler = type("BoundHandler", (Handler,), {"app": app})
     try:
         httpd = ThreadingHTTPServer(("127.0.0.1", port), handler)
@@ -390,20 +409,27 @@ def serve(port: int = 8632, open_browser: bool = True, dry_run: Path | None = No
     url = f"http://127.0.0.1:{port}/"
     print(f"Phomemo UI at {url}" + (f"  (dry run -> {dry_run})" if dry_run else ""),
           file=sys.stderr)
-    print("Ctrl-C to stop.", file=sys.stderr)
+    print("Ctrl-C to stop." + (f" Stops by itself {idle_exit:g} s after the page closes."
+                               if idle_exit else ""), file=sys.stderr)
     if open_browser:
         threading.Timer(0.3, webbrowser.open, args=(url,)).start()
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
+
+    def on_term(signum, frame):
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, on_term)
     try:
-        while True:
+        while not (idle_exit and app.idle_for() > idle_exit):
             try:
                 fn = jobs.get(timeout=0.5)   # short timeout keeps Ctrl-C responsive
             except queue.Empty:
                 continue
             fn()
+        print("No page open; stopping.", file=sys.stderr)
     except KeyboardInterrupt:
         pass
     finally:
         httpd.shutdown()
         httpd.server_close()
+        shutil.rmtree(app.dir, ignore_errors=True)
     return 0

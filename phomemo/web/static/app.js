@@ -223,7 +223,9 @@
         html = card(cls, "ble", title, detail, `<div class="tp-conn-actions"><button class="tp-btn" data-action="ble-check" ${printing() ? "disabled" : ""}>${seen && !seen.ok ? "Check again" : "Check printer"}</button>${test}</div>`); break;
       }
       case "search": html = card("tp-conn--search", "printer", "Starting…", "Connecting to the app server"); break;
-      case "lost": html = card("tp-conn--off", "printerOff", "Lost the app server", "Run <code>phomemo ui</code> again in Terminal, then reload."); break;
+      case "lost": html = card("tp-conn--off", "printerOff", "Lost the app server", state.status.from_app
+        ? "Thermal has quit. Open it again from the Dock or Applications."
+        : "Run <code>phomemo ui</code> again in Terminal, then reload."); break;
       default: html = card("tp-conn--off", "printerOff", "No USB printer", "Plug in the cable, then hold the power button ~3 s until the light is solid red.", `<button class="tp-btn" data-action="retry">Check again</button>`);
     }
     const other = c.kind === "dry" || c.kind === "lost" || c.kind === "search" ? "" : settings.via === "ble"

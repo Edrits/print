@@ -64,6 +64,24 @@ text), see every sheet before it prints, with page count, metres of paper and
 time, and check that the printer is connected. Add `--dry-run job.bin` to try it
 without a printer. It only listens on this Mac.
 
+### As an app in the Dock
+
+```bash
+phomemo ui --make-app
+```
+
+Builds **Thermal.app** in `~/Applications` (Spotlight finds it; drag it to the
+Dock or desktop). Opening it starts the print screen and opens it in your
+default browser; clicking it again reopens the page. Quit it from the Dock, or
+just close the page: the server stops by itself three minutes later and the app
+leaves the Dock. The app only asks macOS to open a localhost link; it has no
+control over your browser.
+
+The first Bluetooth print asks "Thermal would like to use Bluetooth": allow it.
+The app uses this project's `.venv`, so run `--make-app` again if you move the
+project (macOS may ask for Bluetooth again). Server log:
+`~/Library/Logs/Thermal.log`.
+
 ## In every app's print dialog
 
 ```bash
