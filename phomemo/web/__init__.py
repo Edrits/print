@@ -14,7 +14,9 @@ import json
 import queue
 import re
 import shutil
+import os
 import signal
+import subprocess
 import sys
 import tempfile
 import threading
@@ -36,6 +38,7 @@ STATIC = Path(__file__).parent / "static"
 MAX_UPLOAD = 200 * 1024 * 1024
 THUMB_WIDTH = 240
 USB_MM_PER_S = 15.0                      # print head speed
+BLE_SETTINGS = "x-apple.systempreferences:com.apple.preference.security?Privacy_Bluetooth"
 _STATIC_TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
                  ".js": "text/javascript; charset=utf-8", ".svg": "image/svg+xml"}
 _DITHERS = (None, "hybrid") + raster.DITHERS
@@ -103,12 +106,13 @@ class App:
     def status(self) -> dict:
         usb = [self.device] if self.device else transport.discover()
         try:
-            from ..ble import printer_state as ble_state
+            from ..ble import authorization, printer_state as ble_state
+            auth = authorization()
         except Exception:
-            ble_state = {}
+            ble_state, auth = {}, None
         return {"instance": self.instance, "from_app": self.from_app,
                 "usb": usb, "dry_run": str(self.dry_run) if self.dry_run else None,
-                "ble": {"paper": ble_state.get("paper"), "paper_at": ble_state.get("paper_at"),
+                "ble": {"auth": auth, "paper": ble_state.get("paper"), "paper_at": ble_state.get("paper_at"),
                         "waiting_since": ble_state.get("waiting_since")},
                 "now": time.time(),
                 "usb_mm_per_s": USB_MM_PER_S,
@@ -182,6 +186,25 @@ class App:
         if self.job.state == "printing":
             return 0.0
         return time.monotonic() - self.last_seen
+
+    def ble_settings(self) -> None:
+        """Open System Settings at Privacy & Security > Bluetooth."""
+        subprocess.run(["open", BLE_SETTINGS], check=True)
+
+    def ble_ask_again(self) -> Job:
+        """Forget a "Don't Allow" so macOS asks again, then use Bluetooth to
+        make it ask. Only for Thermal.app: resetting Terminal's permission
+        would affect everything run from Terminal."""
+        if not self.from_app:
+            raise RuntimeError("only Thermal.app can ask again; use System Settings")
+        from ..macapp import BUNDLE_ID
+        done = subprocess.run(["tccutil", "reset", "BluetoothAlways", BUNDLE_ID],
+                              capture_output=True, text=True)
+        if done.returncode:
+            raise RuntimeError("macOS wouldn't reset it: "
+                               + (done.stderr.strip() or "tccutil failed")
+                               + ". Turn on Thermal in System Settings instead.")
+        return self.check_ble()
 
     # --- files ---------------------------------------------------------------
 
@@ -338,6 +361,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(job.info(), 202)
             if parts == ["api", "ble", "check"]:
                 return self._json(self.app.check_ble().info(), 202)
+            if parts == ["api", "ble", "settings"]:
+                self.app.ble_settings()
+                return self._json({"ok": True})
+            if parts == ["api", "ble", "ask-again"]:
+                return self._json(self.app.ble_ask_again().info(), 202)
             if parts == ["api", "job", "cancel"]:
                 self.app.job.cancel.set()
                 return self._json(self.app.job.info())
@@ -394,6 +422,8 @@ def serve(port: int = 8632, open_browser: bool = True, dry_run: Path | None = No
     until no page has been open for that many seconds. Hidden tabs still poll
     at least once a minute, so idle_exit should be well above 60."""
     app = App(dry_run=dry_run, device=device, from_app=from_app)
+    if from_app:   # Bluetooth job processes word their permission fix for Thermal
+        os.environ["PHOMEMO_FROM_APP"] = "1"
     handler = type("BoundHandler", (Handler,), {"app": app})
     try:
         httpd = ThreadingHTTPServer(("127.0.0.1", port), handler)

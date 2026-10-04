@@ -78,6 +78,8 @@ leaves the Dock. The app only asks macOS to open a localhost link; it has no
 control over your browser.
 
 The first Bluetooth print asks "Thermal would like to use Bluetooth": allow it.
+If you chose Don't Allow, the Printer panel says Bluetooth is blocked and
+offers **Ask again** (macOS asks once more) or **Open settings**.
 The app uses this project's `.venv`, so run `--make-app` again if you move the
 project (macOS may ask for Bluetooth again). Server log:
 `~/Library/Logs/Thermal.log`.
