@@ -31,6 +31,7 @@ job, then powers off, so every print asks first. `10 04 01` answers
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 import time
 
@@ -54,6 +55,19 @@ DEFAULT_RATE = 20_000          # bytes/s
 def _short(uuid: str) -> str:
     u = uuid.lower()
     return u[4:8] if u.endswith("-0000-1000-8000-00805f9b34fb") else u
+
+
+_AUTHORIZATION = {0: "undetermined", 1: "restricted", 2: "denied", 3: "allowed"}
+
+
+def authorization() -> str | None:
+    """Whether macOS lets this app (Terminal, or Thermal.app) use Bluetooth.
+    Reading it never shows the permission prompt. None off macOS."""
+    try:
+        from CoreBluetooth import CBManager
+        return _AUTHORIZATION.get(int(CBManager.authorization()))
+    except Exception:
+        return None
 
 
 def looks_like_printer(name: str | None) -> bool:
@@ -136,10 +150,12 @@ async def _discover(timeout: float):
             await asyncio.sleep(2.0)
     msg = str(last)
     if "not authorized" in msg or "turned off" in msg:
+        fix = ("turn on Thermal, then print again" if os.environ.get("PHOMEMO_FROM_APP")
+               else "enable Terminal, then quit and reopen Terminal")
         raise ConnectionError(
             f"Bluetooth unavailable ({msg}).\n"
             "  * If Bluetooth is on: System Settings > Privacy & Security > Bluetooth,\n"
-            "    enable Terminal, then quit and reopen Terminal.\n"
+            f"    {fix}.\n"
             "  * Otherwise turn Bluetooth on in Control Centre.") from last
     raise ConnectionError(f"Bluetooth error: {msg}") from last
 

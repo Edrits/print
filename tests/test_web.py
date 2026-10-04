@@ -110,3 +110,62 @@ def test_dry_run_never_goes_over_bluetooth(server):
             break
         time.sleep(0.1)
     assert info["state"] == "done" and info["page"] == info["total"] and out.stat().st_size
+
+
+def test_idle_exit_waits_for_pages_and_jobs(tmp_path):
+    app = web.App(dry_run=tmp_path / "job.bin")
+    app.last_seen -= 100
+    assert app.idle_for() >= 100
+    app.job.state = "printing"          # never stop mid-print
+    assert app.idle_for() == 0
+
+
+def test_requests_count_as_activity(tmp_path):
+    app = web.App(dry_run=tmp_path / "job.bin")
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), type("H", (web.Handler,), {"app": app}))
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        app.last_seen -= 100
+        call(f"http://127.0.0.1:{httpd.server_port}/api/status")
+        assert app.idle_for() < 5
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_status_says_who_started_the_server(tmp_path):
+    assert web.App(dry_run=tmp_path / "j.bin", from_app=True).status()["from_app"] is True
+
+
+def test_status_reports_bluetooth_permission(tmp_path, monkeypatch):
+    from phomemo import ble
+    monkeypatch.setattr(ble, "authorization", lambda: "denied")
+    assert web.App(dry_run=tmp_path / "j.bin").status()["ble"]["auth"] == "denied"
+
+
+def test_ask_again_only_from_thermal_app(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(web.subprocess, "run", lambda args, **kw: calls.append(args))
+    with pytest.raises(RuntimeError):
+        web.App(dry_run=tmp_path / "j.bin").ble_ask_again()   # never reset Terminal's
+    assert calls == []
+
+
+def test_ask_again_resets_thermal_then_uses_bluetooth(tmp_path, monkeypatch):
+    from phomemo import macapp
+    calls = []
+
+    class Done:
+        returncode, stderr = 0, ""
+    monkeypatch.setattr(web.subprocess, "run", lambda args, **kw: calls.append(args) or Done())
+    app = web.App(dry_run=tmp_path / "j.bin", from_app=True)
+    monkeypatch.setattr(app, "check_ble", lambda: "checking")
+    assert app.ble_ask_again() == "checking"
+    assert calls == [["tccutil", "reset", "BluetoothAlways", macapp.BUNDLE_ID]]
+
+
+def test_settings_opens_the_bluetooth_pane(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(web.subprocess, "run", lambda args, **kw: calls.append(args))
+    web.App(dry_run=tmp_path / "j.bin").ble_settings()
+    assert calls == [["open", web.BLE_SETTINGS]]

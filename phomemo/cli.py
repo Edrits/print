@@ -152,9 +152,17 @@ def cmd_serve(a: argparse.Namespace) -> int:
 
 
 def cmd_ui(a: argparse.Namespace) -> int:
+    if a.make_app:
+        from . import macapp
+        app = macapp.make_app(Path(a.app_dir).expanduser(), port=a.port)
+        print(f"Built {app}\n"
+              "Open it from Applications or Spotlight, or drag it to the Dock or desktop.\n"
+              f"Its server log: {macapp.LOG}")
+        return 0
     from . import web
     return web.serve(port=a.port, open_browser=not a.no_open, device=a.device,
-                     dry_run=Path(a.dry_run) if a.dry_run else None)
+                     dry_run=Path(a.dry_run) if a.dry_run else None,
+                     idle_exit=a.idle_exit, from_app=a.from_app)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -212,6 +220,13 @@ def build_parser() -> argparse.ArgumentParser:
     pu.add_argument("--no-open", action="store_true", help="don't open the browser")
     pu.add_argument("--device", help="serial device; default autodetects at each job")
     pu.add_argument("--dry-run", metavar="FILE", help="write each job to FILE instead of printing")
+    pu.add_argument("--idle-exit", type=float, metavar="SECONDS",
+                    help="stop this long after the last page closes (keep it above 60)")
+    pu.add_argument("--make-app", action="store_true",
+                    help="build Thermal.app, a Dock icon that starts this and opens the page")
+    pu.add_argument("--app-dir", default="~/Applications",
+                    help="with --make-app: where to put it (default ~/Applications)")
+    pu.add_argument("--from-app", action="store_true", help=argparse.SUPPRESS)
     pu.set_defaults(func=cmd_ui)
     return p
 

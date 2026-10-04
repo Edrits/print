@@ -139,6 +139,11 @@
     catch (e) { state.notice = `Couldn't start the check: ${e.message}`; }
     poll();
   }
+  async function askBleAgain() {
+    try { await postJSON("/api/ble/ask-again", {}); state.notice = null; scrollToTop(); }
+    catch (e) { state.notice = `Couldn't ask again: ${e.message}`; }
+    poll();
+  }
   // The progress panel sits at the top of the main column: bring it into view.
   function scrollToTop() { $("main").scrollTo({ top: 0 }); window.scrollTo({ top: 0 }); }
   async function cancelJob() { await postJSON("/api/job/cancel", {}).catch(() => {}); poll(); }
@@ -163,7 +168,7 @@
     const s = state.status;
     if (state.statusError || !s) return { kind: s ? "lost" : "search" };
     if (s.dry_run) return { kind: "dry", detail: s.dry_run };
-    if (settings.via === "ble") return { kind: "ble" };
+    if (settings.via === "ble") return { kind: ["denied", "restricted"].includes(s.ble?.auth) ? "ble-blocked" : "ble" };
     if (s.usb.length) return { kind: "usb", detail: s.usb[0] };
     return { kind: "off" };
   }
@@ -197,6 +202,7 @@
         if (paper === false) return `<span class="tp-status tp-status--off"><span class="tp-dot"></span>No paper <span class="tp-via">Bluetooth</span></span>`;
         return `<span class="tp-status"><span class="tp-dot"></span>${paper ? "Paper loaded" : "Printer found"} <span class="tp-via">${seen.when}</span></span>`;
       }
+      case "ble-blocked": return `<span class="tp-status tp-status--off"><span class="tp-dot"></span>Bluetooth blocked <span class="tp-via">macOS</span></span>`;
       case "dry": return `<span class="tp-status tp-status--warn"><span class="tp-dot"></span>Dry run <span class="tp-via">no printer</span></span>`;
       case "search": return `<span class="tp-status tp-status--busy"><span class="tp-dot"></span>Looking for printer…</span>`;
       case "lost": return `<span class="tp-status tp-status--off"><span class="tp-dot"></span>App server stopped</span>`;
@@ -223,7 +229,18 @@
         html = card(cls, "ble", title, detail, `<div class="tp-conn-actions"><button class="tp-btn" data-action="ble-check" ${printing() ? "disabled" : ""}>${seen && !seen.ok ? "Check again" : "Check printer"}</button>${test}</div>`); break;
       }
       case "search": html = card("tp-conn--search", "printer", "Starting…", "Connecting to the app server"); break;
-      case "lost": html = card("tp-conn--off", "printerOff", "Lost the app server", "Run <code>phomemo ui</code> again in Terminal, then reload."); break;
+      case "ble-blocked": {
+        const app = state.status.from_app ? "Thermal" : "Terminal";
+        const askAgain = state.status.from_app && state.status.ble.auth === "denied"
+          ? `<button class="tp-btn" data-action="ble-ask-again" ${printing() ? "disabled" : ""}>Ask again</button>` : "";
+        html = card("tp-conn--off", "ble", `Bluetooth is blocked for ${app}`,
+          `${askAgain ? "Ask again and choose Allow, or turn" : "Turn"} ${app} on in System Settings › Privacy &amp; Security › Bluetooth.`,
+          `<div class="tp-conn-actions">${askAgain}<button class="tp-btn" data-action="ble-settings">Open settings</button></div>`);
+        break;
+      }
+      case "lost": html = card("tp-conn--off", "printerOff", "Lost the app server", state.status.from_app
+        ? "Thermal has quit. Open it again from the Dock or Applications."
+        : "Run <code>phomemo ui</code> again in Terminal, then reload."); break;
       default: html = card("tp-conn--off", "printerOff", "No USB printer", "Plug in the cable, then hold the power button ~3 s until the light is solid red.", `<button class="tp-btn" data-action="retry">Check again</button>`);
     }
     const other = c.kind === "dry" || c.kind === "lost" || c.kind === "search" ? "" : settings.via === "ble"
@@ -475,6 +492,8 @@
       case "print": startPrint(); break;
       case "test": testPage(); break;
       case "ble-check": checkBle(); break;
+      case "ble-ask-again": askBleAgain(); break;
+      case "ble-settings": postJSON("/api/ble/settings", {}).catch((e) => { state.notice = `Couldn't open System Settings: ${e.message}`; draw(); }); break;
       case "cancel": cancelJob(); break;
       case "retry": state.status = null; draw(); poll(); break;
       case "notice-dismiss": state.notice = null; draw(); break;
