@@ -64,7 +64,7 @@ class Upload:
 
 @dataclass
 class Job:
-    state: str = "idle"          # idle | printing | done | error | cancelled
+    state: str = "idle"          # idle | printing | waiting | done | error | cancelled
     page: int = 0                # pages fully sent
     total: int = 0
     error: str | None = None
@@ -74,11 +74,17 @@ class Job:
     phase: str = "sending"       # sending | connecting (BLE: sent in one go at the end)
     kind: str = "print"          # print | check (Bluetooth link test, no paper)
     cancel: threading.Event = field(default_factory=threading.Event)
+    # Bluetooth on sheet media: one job per sheet; "waiting" between them.
+    per_sheet: bool = False
+    sheets: list = field(default_factory=list, repr=False)   # all sheets, in order
+    density: int = 5
 
     def info(self) -> dict:
         return {"state": self.state, "page": self.page, "total": self.total,
                 "error": self.error, "started": self.started, "files": self.files,
-                "via": self.via, "phase": self.phase, "kind": self.kind}
+                "via": self.via, "phase": self.phase, "kind": self.kind,
+                "per_sheet": self.per_sheet,
+                "remaining": self.total - self.page if self.sheets else 0}
 
 
 class App:
@@ -128,8 +134,33 @@ class App:
                 via = "dry"           # written to a file: never Bluetooth, page progress works
             job = Job(state="printing", total=len(pages) * copies, started=time.time(),
                       files=files, via=via)
+            if via == "ble" and spec.page_height_dots(media) is not None:
+                job.per_sheet, job.density = True, density
+                job.sheets = jobmod.one_per_sheet(pages, copies)
             self.job = job
-        self.submit(lambda: self._run(job, pages, density, copies, media, via))
+        if job.per_sheet:
+            self.submit(lambda: self._run_sheet(job))
+        else:
+            self.submit(lambda: self._run(job, pages, density, copies, media, via))
+        return job
+
+    def next_sheet(self) -> Job:
+        """Print the next sheet of a per-sheet job: after the person loads it, or
+        to try a sheet again after an error."""
+        with self.lock:
+            job = self.job
+            if job.state not in ("waiting", "error") or not job.sheets:
+                raise RuntimeError("no sheets are waiting to print")
+            job.state, job.error, job.phase = "printing", None, "sending"
+        self.submit(lambda: self._run_sheet(job))
+        return job
+
+    def cancel(self) -> Job:
+        with self.lock:
+            job = self.job
+            job.cancel.set()
+            if job.state in ("waiting", "error") and job.sheets:
+                job.state, job.sheets = "cancelled", []
         return job
 
     def check_ble(self) -> Job:
@@ -180,6 +211,30 @@ class App:
             job.page, job.state = job.total, "done"
         except Exception as e:   # surfaced to the browser, not the console
             job.state, job.error = "error", str(e).strip()
+
+    def _run_sheet(self, job: Job):
+        """One sheet over Bluetooth, then wait for the next to be loaded. The
+        M08F takes in a whole job even after the sheet has run out, so sending
+        every sheet at once printed the first and dropped the rest unseen."""
+        page = job.sheets[job.page]
+        try:
+            with transport.open_port(ble="auto", ble_eject=True, ble_isolate=True) as port:
+                port.send(escpos.initialize() + escpos.density(job.density))
+                port.send(b"".join(escpos.raster_block(wb, h, data)
+                                   for wb, h, data in raster.bands(page)))
+                port.send(escpos.feed(0) + escpos.cut("none"))
+                job.phase = "connecting"
+        except Exception as e:   # the sheet stays next, so it can be tried again
+            job.state, job.error = "error", str(e).strip()
+            return
+        with self.lock:
+            job.page += 1
+            if job.page >= job.total:
+                job.state, job.sheets = "done", []
+            elif job.cancel.is_set():
+                job.state, job.sheets = "cancelled", []
+            else:
+                job.state, job.phase = "waiting", "sending"
 
     def idle_for(self) -> float:
         """Seconds since the last request, or 0 while a job is printing."""
@@ -367,8 +422,9 @@ class Handler(BaseHTTPRequestHandler):
             if parts == ["api", "ble", "ask-again"]:
                 return self._json(self.app.ble_ask_again().info(), 202)
             if parts == ["api", "job", "cancel"]:
-                self.app.job.cancel.set()
-                return self._json(self.app.job.info())
+                return self._json(self.app.cancel().info())
+            if parts == ["api", "job", "next"]:
+                return self._json(self.app.next_sheet().info(), 202)
         except RuntimeError as e:
             return self._error(409, str(e))
         except ValueError as e:
@@ -389,10 +445,16 @@ class Handler(BaseHTTPRequestHandler):
     def _print(self, req: dict):
         media = req.get("media") if req.get("media") in spec.PAGE_SIZES_MM else "a4"
         pages, names = [], []
-        for uid in req.get("files", []):
+        for entry in req.get("files", []):
+            # an id, or {id, pages: [index, ...]} to print only some of its pages
+            uid, which = (entry.get("id"), entry.get("pages")) if isinstance(entry, dict) else (entry, None)
             up = self.app.uploads.get(uid)
-            if up and up.pages:
-                pages.extend(up.pages)
+            if not (up and up.pages):
+                continue
+            chosen = up.pages if which is None else \
+                [up.pages[i] for i in which if isinstance(i, int) and 0 <= i < len(up.pages)]
+            if chosen:
+                pages.extend(chosen)
                 names.append(up.name)
         if not pages:
             raise ValueError("nothing to print")

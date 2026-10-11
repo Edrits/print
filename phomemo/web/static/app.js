@@ -17,6 +17,7 @@
     file: '<path d="M9.5 1.5h-6v13h9v-10zM9.5 1.5v3h3"/>',
     x: '<path d="M4 4l8 8M12 4l-8 8"/>',
     grip: '<path d="M6 4h.01M10 4h.01M6 8h.01M10 8h.01M6 12h.01M10 12h.01" stroke-width="2.4"/>',
+    undo: '<path d="M3 6.5h7a3.5 3.5 0 0 1 0 7H6M6 3.5l-3 3 3 3"/>',
     left: '<path d="M10 3L5 8l5 5"/>', right: '<path d="M6 3l5 5-5 5"/>',
   };
   const icon = (name) => `<svg class="tp-icon" viewBox="0 0 16 16" aria-hidden="true">${ICON[name]}</svg>`;
@@ -28,7 +29,7 @@
   const defaults = { media: "a4", density: 5, dither: null, copies: 1, fit: "page", via: "ble" };     // Bluetooth first; USB is the fallback
   const settings = Object.assign({}, defaults, load("thermal.settings"));
   const state = {
-    files: [],            // {id, name, kind, size, status: uploading|rendering|ready|error, error, pages:[{h}], version}
+    files: [],            // {id, name, kind, size, status: uploading|rendering|ready|error, error, pages:[{h}], skip:[page index], version}
     selected: null,
     status: null,         // /api/status
     statusError: false,
@@ -60,6 +61,7 @@
       if (!state.files.includes(f)) return;
       try {
         const info = await postJSON(`/api/files/${f.id}/render`, opts);
+        if (info.pages.length !== f.pages.length) f.skip = [];   // different pages now: skips no longer point at the same ones
         Object.assign(f, { kind: info.kind, pages: info.pages, version: info.version, error: info.error });
         f.status = info.error ? "error" : "ready";
       } catch (e) { f.status = "error"; f.error = e.message; }
@@ -70,7 +72,7 @@
   async function addFiles(list) {
     const files = [...list].filter((f) => f.size > 0 || f.type.startsWith("text"));
     for (const file of files) {
-      const f = { id: null, file, name: file.name || "untitled", size: file.size, status: "uploading", pages: [], version: 0 };
+      const f = { id: null, file, name: file.name || "untitled", size: file.size, status: "uploading", pages: [], skip: [], version: 0 };
       state.files.push(f);
       await upload(f);
     }
@@ -121,7 +123,7 @@
   }
 
   async function startPrint() {
-    const ids = readyFiles().map((f) => f.id);
+    const ids = readyFiles().map((f) => ({ id: f.id, pages: kept(f) }));
     try {
       await postJSON("/api/print", { files: ids, density: settings.density, copies: settings.copies, media: settings.media, via: settings.via });
       state.notice = null;
@@ -147,17 +149,28 @@
   // The progress panel sits at the top of the main column: bring it into view.
   function scrollToTop() { $("main").scrollTo({ top: 0 }); window.scrollTo({ top: 0 }); }
   async function cancelJob() { await postJSON("/api/job/cancel", {}).catch(() => {}); poll(); }
+  async function nextSheet() {
+    try { await postJSON("/api/job/next", {}); state.notice = null; scrollToTop(); }
+    catch (e) { state.notice = `Couldn't print the next sheet: ${e.message}`; }
+    poll();
+  }
 
   // ---- derived -------------------------------------------------------------
 
-  const readyFiles = () => state.files.filter((f) => f.status === "ready" && f.pages.length);
+  // Pages the person skipped in the preview stay rendered and visible, but don't print.
+  const skipped = (f, i) => f.skip.includes(i);
+  const kept = (f) => f.pages.map((_, i) => i).filter((i) => !skipped(f, i));
+  const shownFiles = () => state.files.filter((f) => f.status === "ready" && f.pages.length);
+  const readyFiles = () => shownFiles().filter((f) => kept(f).length);
   const job = () => (state.status ? state.status.job : { state: "idle" });
   const printing = () => job().state === "printing";
+  // A per-sheet Bluetooth job with sheets left: waiting for the next, or stopped on an error.
+  const resumable = () => ["waiting", "error"].includes(job().state) && job().remaining > 0;
   const sheetMM = (p) => p.h / DOTS_PER_MM;
 
   function totals() {
     const files = readyFiles();
-    const pages = files.flatMap((f) => f.pages);
+    const pages = files.flatMap((f) => kept(f).map((i) => f.pages[i]));
     const mm = pages.reduce((s, p) => s + sheetMM(p), 0) * settings.copies;
     const speed = settings.via === "ble" ? (state.status?.ble_mm_per_s || 12) : (state.status?.usb_mm_per_s || 15);
     return { files: files.length, sheets: pages.length * settings.copies, perCopy: pages.length, mm, seconds: mm / speed,
@@ -189,6 +202,8 @@
   function viewPill() {
     const j = job();
     if (j.state === "printing" && j.kind === "check") return `<span class="tp-status tp-status--busy"><span class="tp-dot"></span>Checking Bluetooth…</span>`;
+    if (j.state === "printing" && j.per_sheet) return `<span class="tp-status tp-status--busy"><span class="tp-dot"></span>Printing <span class="tp-via">sheet ${j.page + 1}/${j.total}</span></span>`;
+    if (j.state === "waiting") return `<span class="tp-status tp-status--warn"><span class="tp-dot"></span>Load sheet ${j.page + 1} <span class="tp-via">${j.page}/${j.total} printed</span></span>`;
     if (j.state === "printing" && j.via === "ble") return `<span class="tp-status tp-status--busy"><span class="tp-dot"></span>Sending <span class="tp-via">Bluetooth</span></span>`;
     if (j.state === "printing") return `<span class="tp-status tp-status--busy"><span class="tp-dot"></span>${j.via === "dry" ? "Writing" : "Printing"} <span class="tp-via">${Math.min(j.page + 1, j.total)}/${j.total}</span></span>`;
     const c = connection();
@@ -300,6 +315,30 @@
     }
     const ws = state.status?.ble?.waiting_since;
     const paused = ws && state.status.now - ws > 3 ? state.status.now - ws : 0;
+    const bar = (done) => `<div class="tp-bar" style="--pages:${Math.min(j.total, 60)}"><span style="width:${(done / j.total) * 100}%"></span>${j.total <= 60 ? '<div class="tp-ticks"></div>' : ""}</div>`;
+    if (j.state === "printing" && j.per_sheet && j.total > 1) {
+      return `<div class="tp-panel tp-progress-panel">
+        <div class="tp-panel-head"><div class="tp-row">${viewPill()}<span class="tp-caption">${what}</span></div></div>
+        <div class="tp-pad"><div class="tp-progress">
+          <div class="tp-progress-row"><span class="tp-figure" style="font-size:24px;line-height:28px">Sheet ${j.page + 1} <small>of ${j.total}</small></span><span class="tp-mono tp-muted" style="font-size:12px">${paused ? `paused ${fmtTime(paused)}` : "Bluetooth"}</span></div>
+          ${bar(j.page)}
+          <p class="tp-caption">${paused
+            ? (state.status.ble.paper === false ? "The printer reports it's out of paper. Load a sheet; printing continues when it's ready." : "The printer has stopped taking data, usually to cool down after dark areas. It resumes on its own; this waits up to 3 minutes.")
+            : "Connecting and sending this sheet. Over Bluetooth each sheet is its own job, so you'll be asked to load the next one."}</p>
+        </div></div></div>`;
+    }
+    if (j.state === "waiting") {
+      return `<div class="tp-panel tp-progress-panel">
+        <div class="tp-panel-head"><div class="tp-row">${viewPill()}<span class="tp-caption">${what}</span></div><button class="tp-btn" data-action="cancel">Stop</button></div>
+        <div class="tp-pad"><div class="tp-progress">
+          <div class="tp-progress-row"><span class="tp-figure" style="font-size:24px;line-height:28px">${j.page} <small>of ${j.total} printed</small></span><span class="tp-mono tp-muted" style="font-size:12px">${plural(j.remaining, "sheet")} left</span></div>
+          ${bar(j.page)}
+          <div class="tp-row" style="justify-content:space-between;gap:var(--space-4);flex-wrap:wrap">
+            <p class="tp-caption" style="flex:1;min-width:200px">Take out the printed sheet and feed in sheet ${j.page + 1} until the printer grabs it (the light turns green). Then print it.</p>
+            <button class="tp-btn tp-btn--primary" data-action="next-sheet">${icon("printer")} Print sheet ${j.page + 1}</button>
+          </div>
+        </div></div></div>`;
+    }
     if (j.state === "printing" && j.via === "ble") {
       return `<div class="tp-panel tp-progress-panel">
         <div class="tp-panel-head"><div class="tp-row">${viewPill()}<span class="tp-caption">${what}</span></div></div>
@@ -327,9 +366,16 @@
       done: j.via === "dry"
         ? `<div class="tp-msg tp-msg--ok">Wrote ${plural(j.total, "page")} from ${what} to ${esc((state.status.dry_run || "").split("/").pop())}. Nothing was printed.</div>`
         : `<div class="tp-msg tp-msg--ok">Printed ${plural(j.total, "page")} from ${what}.</div>`,
-      cancelled: `<div class="tp-msg">Cancelled after ${plural(j.page, "page")}. The printer finishes what it already received.</div>`,
+      cancelled: j.per_sheet
+        ? `<div class="tp-msg">Stopped after ${j.page} of ${plural(j.total, "sheet")}.</div>`
+        : `<div class="tp-msg">Cancelled after ${plural(j.page, "page")}. The printer finishes what it already received.</div>`,
       error: `<div class="tp-msg tp-msg--error">${icon("x")}<div><strong>${j.page ? `Printing stopped after ${plural(j.page, "page")}.` : "Nothing was printed."}</strong><div class="tp-msg-detail">${esc(j.error || "unknown error")}</div>${j.via === "ble" ? '<div class="tp-msg-detail">USB is more reliable: plug in the cable, hold power ~3 s until the light is solid red, and switch the Printer panel to USB.</div>' : ""}</div></div>`,
     }[j.state] || "";
+    if (resumable()) {
+      const n = j.page + 1;
+      const err = `<div class="tp-msg tp-msg--error">${icon("x")}<div><strong>Sheet ${n} of ${j.total} didn't print.</strong><div class="tp-msg-detail">${esc(j.error || "unknown error")}</div><div class="tp-msg-detail">${j.page ? `Sheets 1–${j.page} are done. ` : ""}Fix the problem, then try sheet ${n} again; earlier sheets won't be reprinted.</div></div></div>`;
+      return `<div class="tp-panel"><div class="tp-panel-head tp-panel-head--solo">${err}<div class="tp-row"><button class="tp-btn tp-btn--ghost" data-action="cancel">Stop</button><button class="tp-btn tp-btn--primary" data-action="next-sheet">Try sheet ${n} again</button></div></div></div>`;
+    }
     return `<div class="tp-panel"><div class="tp-panel-head tp-panel-head--solo">${msg}${dismiss}</div></div>`;
   }
 
@@ -354,9 +400,10 @@
   function viewPayout() {
     const j = job();
     const order = readyFiles();
-    const total = order.reduce((s, f) => s + f.pages.length, 0);
-    // Bluetooth sends the whole job at once, so there's no current page to point at.
-    const live = j.state === "printing" && j.via !== "ble" && j.kind !== "check" && settings.copies === 1 && j.total === total;
+    const total = order.reduce((s, f) => s + kept(f).length, 0);
+    const anySkipped = shownFiles().some((f) => f.skip.length);
+    // Bluetooth to continuous paper sends the whole job at once: no current page to point at.
+    const live = (j.state === "printing" || j.state === "waiting") && (j.via !== "ble" || j.per_sheet) && j.kind !== "check" && settings.copies === 1 && j.total === total;
     let n = 0;
     const groups = state.files.filter((f) => f.status !== "error").map((f, gi) => {
       const fi = state.files.indexOf(f);
@@ -365,18 +412,22 @@
         sheets = `<div class="tp-sheet-wrap"><div class="tp-sheet tp-sheet--pending" style="aspect-ratio:210/297"></div><div class="tp-sheet-cap"><span>${f.status === "uploading" ? "Adding…" : "Rendering…"}</span></div></div>`;
       } else {
         sheets = f.pages.map((p, pi) => {
-          const idx = n++;
           const ratio = `${WIDTH_DOTS} / ${p.h}`;
           const tall = p.h / WIDTH_DOTS > 2.2;
+          const skip = `<button class="tp-sheet-skip" data-action="skip" data-file="${fi}" data-page="${pi}" ${printing() ? "disabled" : ""}`;
+          if (skipped(f, pi)) {
+            return `<div class="tp-sheet-wrap tp-sheet-wrap--skipped"><button class="tp-sheet tp-sheet--skipped ${tall ? "tp-sheet--long" : ""}" style="aspect-ratio:${tall ? "210/420" : ratio}" data-action="zoom" data-file="${fi}" data-page="${pi}" aria-label="Skipped: page ${pi + 1} of ${esc(f.name)}"><img src="${thumb(f, pi)}" alt="" loading="lazy" draggable="false"></button>${skip} aria-label="Print page ${pi + 1} of ${esc(f.name)} again" title="Print this page">${icon("undo")}</button><div class="tp-sheet-cap"><span>Skipped</span></div></div>`;
+          }
+          const idx = n++;
           const cls = [tall && "tp-sheet--long", live && idx < j.page && "tp-sheet--done", live && idx === j.page && "tp-sheet--active",
             state.selected === f.id && !live && "tp-sheet--active"].filter(Boolean).join(" ");
-          return `<div class="tp-sheet-wrap"><button class="tp-sheet ${cls}" style="aspect-ratio:${tall ? "210/420" : ratio}" data-action="zoom" data-file="${fi}" data-page="${pi}" aria-label="Page ${idx + 1} of ${total}, ${esc(f.name)}"><img src="${thumb(f, pi)}" alt="" loading="lazy" draggable="false"></button><div class="tp-sheet-cap"><span>${idx + 1} / ${total}</span></div></div>`;
+          return `<div class="tp-sheet-wrap">${live ? "" : `${skip} aria-label="Skip page ${pi + 1} of ${esc(f.name)}" title="Skip this page">${icon("x")}</button>`}<button class="tp-sheet ${cls}" style="aspect-ratio:${tall ? "210/420" : ratio}" data-action="zoom" data-file="${fi}" data-page="${pi}" aria-label="Page ${idx + 1} of ${total}, ${esc(f.name)}"><img src="${thumb(f, pi)}" alt="" loading="lazy" draggable="false"></button><div class="tp-sheet-cap"><span>${idx + 1} / ${total}</span></div></div>`;
         }).join("");
       }
       return `${gi ? '<div class="tp-split"></div>' : ""}<div class="tp-group"><div class="tp-file-label" title="${esc(f.name)}">${esc(f.name)}</div><div class="tp-roll">${sheets}</div></div>`;
     }).join("");
     return `<div class="tp-stack" style="gap:var(--space-3)">
-      <div class="tp-row" style="justify-content:space-between"><span class="tp-overline">Preview</span><span class="tp-caption">Click a ${settings.media === "continuous" ? "page" : "sheet"} to see it at print resolution</span></div>
+      <div class="tp-row" style="justify-content:space-between"><span class="tp-overline">Preview</span><span class="tp-row" style="gap:var(--space-3)"><span class="tp-caption">Click a ${settings.media === "continuous" ? "page" : "sheet"} to see it full size · × skips it</span>${anySkipped ? `<button class="tp-link tp-switch" data-action="unskip-all" ${printing() ? "disabled" : ""}>Print all pages</button>` : ""}</span></div>
       <div class="tp-payout"><div class="tp-roll">${groups}</div></div>
     </div>`;
   }
@@ -391,7 +442,7 @@
       }[f.status];
       const meta = f.status === "error" ? `<span class="tp-file-error">${esc(f.error || "Couldn't render this file")}</span>` : `${fmtSize(f.size)}${f.kind ? ` · ${f.kind}` : ""}`;
       const mini = f.status === "ready" && f.pages.length ? `<span class="tp-mini"><img src="${thumb(f, 0)}" alt="" draggable="false"></span>` : `<span class="tp-mini"></span>`;
-      const pages = f.status === "ready" ? plural(f.pages.length, "page") : "";
+      const pages = f.status !== "ready" ? "" : f.skip.length ? `${kept(f).length} of ${plural(f.pages.length, "page")}` : plural(f.pages.length, "page");
       return `<li class="tp-file tp-file--clickable ${state.selected === f.id ? "tp-file--selected" : ""}" draggable="${!printing()}" data-index="${i}" data-action="select">
         <span class="tp-grip" title="Drag to reorder">${icon("grip")}</span>${mini}
         <div style="min-width:0"><div class="tp-file-name" title="${esc(f.name)}">${esc(f.name)}</div><div class="tp-file-meta"><span class="tp-tag">${esc(kindTag(f))}</span>${meta}</div></div>
@@ -412,7 +463,7 @@
     if (!state.files.length) {
       return `${progress}<div class="tp-empty"><div><h1 class="tp-display">Ready to print</h1><p class="tp-caption" style="font-size:14px;line-height:20px;margin-top:var(--space-2)">Add PDFs, Markdown, text or photos. You'll see every sheet before anything prints.</p></div>${dropZone(false)}</div>`;
     }
-    return `${progress}${readyFiles().length ? viewSummary() + viewPayout() : ""}${dropZone(true)}${viewQueue()}`;
+    return `${progress}${shownFiles().length ? viewSummary() + viewPayout() : ""}${dropZone(true)}${viewQueue()}`;
   }
 
   function viewFoot() {
@@ -427,6 +478,12 @@
     else if (!t.sheets) { reason = "Nothing printable in the queue"; block = true; }
     else if (failed) reason = `${plural(failed, "file")} failed and will be skipped`;
     else reason = `${plural(t.sheets, t.noun)}, ${(t.mm / 1000).toFixed(2)} m of paper`;
+    if (resumable()) {
+      const j = job(), n = j.page + 1;
+      const why = j.state === "waiting" ? `Sheet ${j.page} of ${j.total} printed: load sheet ${n}` : `Sheet ${n} didn't print`;
+      return `<span class="tp-reason">${why}</span>
+      <button class="tp-btn tp-btn--primary tp-btn--lg" data-action="next-sheet">${icon("printer")} Print sheet ${n} of ${j.total} <span class="tp-kbd">⌘P</span></button>`;
+    }
     const disabled = printing() || !canSend() || busy || !t.sheets;
     const label = t.sheets ? `Print ${plural(t.sheets, t.noun)}` : "Print";
     return `<span class="tp-reason ${block ? "tp-reason--block" : ""}">${reason}</span>
@@ -438,11 +495,12 @@
     if (!lb) return "";
     const f = state.files[lb.fileIndex];
     if (!f || !f.pages[lb.pageIndex]) { state.lightbox = null; return ""; }
-    const flat = readyFiles().flatMap((x) => x.pages.map((_, i) => [x, i]));
+    const flat = shownFiles().flatMap((x) => x.pages.map((_, i) => [x, i]));
     const pos = flat.findIndex(([x, i]) => x === f && i === lb.pageIndex);
     const p = f.pages[lb.pageIndex];
-    return `<div class="tp-lightbox-bar"><span>${esc(f.name)} · page ${String(pos + 1).padStart(2, "0")}/${flat.length} · ${WIDTH_DOTS} × ${p.h} dots · ${(p.h / DOTS_PER_MM).toFixed(0)} mm</span>
-      <div class="tp-row"><button class="tp-btn tp-btn--icon" data-action="lb-step" data-value="-1" aria-label="Previous page" ${pos <= 0 ? "disabled" : ""}>${icon("left")}</button><button class="tp-btn tp-btn--icon" data-action="lb-step" data-value="1" aria-label="Next page" ${pos >= flat.length - 1 ? "disabled" : ""}>${icon("right")}</button><button class="tp-btn" data-action="lb-close">Close</button></div></div>
+    const off = skipped(f, lb.pageIndex);
+    return `<div class="tp-lightbox-bar"><span>${esc(f.name)} · page ${lb.pageIndex + 1}/${f.pages.length}${off ? " · skipped, won't print" : ""} · ${WIDTH_DOTS} × ${p.h} dots · ${(p.h / DOTS_PER_MM).toFixed(0)} mm</span>
+      <div class="tp-row"><button class="tp-btn" data-action="skip" data-file="${lb.fileIndex}" data-page="${lb.pageIndex}" title="Delete key" ${printing() ? "disabled" : ""}>${off ? "Print this page" : "Skip this page"}</button><button class="tp-btn tp-btn--icon" data-action="lb-step" data-value="-1" aria-label="Previous page" ${pos <= 0 ? "disabled" : ""}>${icon("left")}</button><button class="tp-btn tp-btn--icon" data-action="lb-step" data-value="1" aria-label="Next page" ${pos >= flat.length - 1 ? "disabled" : ""}>${icon("right")}</button><button class="tp-btn" data-action="lb-close">Close</button></div></div>
       <div class="tp-lightbox-body" data-action="lb-close"><img src="${thumb(f, lb.pageIndex, true)}" style="aspect-ratio:${WIDTH_DOTS}/${p.h};background-image:url('${thumb(f, lb.pageIndex)}')" alt="Page ${pos + 1} at printed resolution" draggable="false"></div>`;
   }
 
@@ -474,8 +532,15 @@
     draw();
   }
 
+  function toggleSkip(fileIndex, pageIndex) {
+    const f = state.files[fileIndex];
+    if (!f || printing()) return;
+    f.skip = skipped(f, pageIndex) ? f.skip.filter((i) => i !== pageIndex) : [...f.skip, pageIndex];
+    draw();
+  }
+
   function stepLightbox(d) {
-    const flat = readyFiles().flatMap((x) => x.pages.map((_, i) => [x, i]));
+    const flat = shownFiles().flatMap((x) => x.pages.map((_, i) => [x, i]));
     const lb = state.lightbox;
     const pos = flat.findIndex(([x, i]) => x === state.files[lb.fileIndex] && i === lb.pageIndex) + d;
     if (pos < 0 || pos >= flat.length) return;
@@ -495,6 +560,7 @@
       case "ble-ask-again": askBleAgain(); break;
       case "ble-settings": postJSON("/api/ble/settings", {}).catch((e) => { state.notice = `Couldn't open System Settings: ${e.message}`; draw(); }); break;
       case "cancel": cancelJob(); break;
+      case "next-sheet": nextSheet(); break;
       case "retry": state.status = null; draw(); poll(); break;
       case "notice-dismiss": state.notice = null; draw(); break;
       case "dismiss": state.dismissedJob = job().started; save("thermal.dismissed", state.dismissedJob); draw(); break;
@@ -507,6 +573,8 @@
       case "clear": [...state.files].forEach(removeFile); break;
       case "select": { const f = state.files[Number(el.dataset.index)]; state.selected = state.selected === f.id ? null : f.id; draw(); break; }
       case "zoom": state.lightbox = { fileIndex: Number(el.dataset.file), pageIndex: Number(el.dataset.page) }; draw(); break;
+      case "skip": e.stopPropagation(); toggleSkip(Number(el.dataset.file), Number(el.dataset.page)); break;
+      case "unskip-all": state.files.forEach((f) => { f.skip = []; }); draw(); break;
       case "lb-step": e.stopPropagation(); stepLightbox(Number(v)); break;
       case "lb-close": if (e.target.tagName !== "IMG") { state.lightbox = null; draw(); } break;
     }
@@ -517,14 +585,15 @@
       if (e.key === "Escape") { state.lightbox = null; draw(); }
       if (e.key === "ArrowRight") stepLightbox(1);
       if (e.key === "ArrowLeft") stepLightbox(-1);
+      if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); toggleSkip(state.lightbox.fileIndex, state.lightbox.pageIndex); }
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "p") e.preventDefault();
       return;
     }
     if ((e.key === "Enter" || e.key === " ") && e.target.dataset?.action === "pick") { e.preventDefault(); $("picker").click(); }
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "p") {
       e.preventDefault();
-      const b = document.querySelector('[data-action="print"]');
-      if (b && !b.disabled) startPrint();
+      const b = document.querySelector('.tp-foot [data-action="print"], .tp-foot [data-action="next-sheet"]');
+      if (b && !b.disabled) b.click();
     }
   });
   $("picker").addEventListener("change", (e) => { addFiles(e.target.files); e.target.value = ""; });

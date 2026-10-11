@@ -169,3 +169,88 @@ def test_settings_opens_the_bluetooth_pane(tmp_path, monkeypatch):
     monkeypatch.setattr(web.subprocess, "run", lambda args, **kw: calls.append(args))
     web.App(dry_run=tmp_path / "j.bin").ble_settings()
     assert calls == [["open", web.BLE_SETTINGS]]
+
+
+def _sheet_app(monkeypatch, fail_on=()):
+    """An App printing over a fake Bluetooth port: records one entry per
+    connection; raises on the connections numbered in fail_on."""
+    from contextlib import contextmanager
+    from PIL import Image
+    sent = []
+
+    @contextmanager
+    def fake_port(**kw):
+        buf = bytearray()
+        port = type("P", (), {"send": lambda self, d: buf.extend(d)})()
+        yield port
+        if len(sent) + 1 in fail_on:
+            fail_on.remove(len(sent) + 1)
+            raise ConnectionError("No paper")
+        sent.append((kw, bytes(buf)))
+
+    monkeypatch.setattr(web.transport, "open_port", fake_port)
+    app = web.App()
+    app.submit = lambda fn: fn()
+    page = Image.new("1", (1664, 2376), 1)
+    return app, sent, page
+
+
+def test_bluetooth_sheets_print_one_per_job(monkeypatch):
+    app, sent, page = _sheet_app(monkeypatch)
+    job = app.start_job([page, page, page], 5, 1, "a4", "ble", ["x.pdf"])
+    assert len(sent) == 1 and sent[0][0]["ble_eject"]       # only sheet 1 went out
+    assert job.info()["state"] == "waiting" and job.info()["remaining"] == 2
+    app.next_sheet()
+    assert len(sent) == 2 and job.state == "waiting" and job.page == 2
+    app.next_sheet()
+    assert len(sent) == 3 and job.state == "done" and job.info()["remaining"] == 0
+    with pytest.raises(RuntimeError):
+        app.next_sheet()
+
+
+def test_bluetooth_sheet_error_retries_the_same_sheet(monkeypatch):
+    app, sent, page = _sheet_app(monkeypatch, fail_on=[2])
+    job = app.start_job([page, page], 5, 1, "a4", "ble", ["x.pdf"])
+    app.next_sheet()                                         # sheet 2 fails
+    assert job.state == "error" and job.page == 1 and job.info()["remaining"] == 1
+    app.next_sheet()                                         # tried again, not sheet 1
+    assert job.state == "done" and len(sent) == 2
+
+
+def test_stop_between_sheets(monkeypatch):
+    app, sent, page = _sheet_app(monkeypatch)
+    job = app.start_job([page, page], 5, 2, "a4", "ble", ["x.pdf"])
+    assert job.total == 4
+    app.cancel()
+    assert job.state == "cancelled" and job.info()["remaining"] == 0
+
+
+def test_continuous_bluetooth_is_still_one_job(monkeypatch):
+    app, sent, page = _sheet_app(monkeypatch)
+    job = app.start_job([page, page], 5, 1, "continuous", "ble", ["x.pdf"])
+    assert job.state == "done" and len(sent) == 1 and not job.per_sheet
+
+
+
+def test_print_only_the_pages_kept(tmp_path, monkeypatch):
+    from PIL import Image
+    started = []
+    monkeypatch.setattr(web.App, "start_job",
+                        lambda self, pages, *a: started.append(pages) or web.Job())
+    app = web.App(dry_run=tmp_path / "job.bin")
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), type("H", (web.Handler,), {"app": app}))
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{httpd.server_port}"
+    try:
+        uid = json.loads(call(f"{base}/api/files", "POST", b"x", {"X-Filename": "a.pdf"})[1])["id"]
+        app.uploads[uid].pages = [Image.new("1", (1664, 10 + i), 1) for i in range(5)]
+        status, _ = call(f"{base}/api/print", "POST", {"files": [{"id": uid, "pages": [0, 2, 4, 9]}]})
+        assert status == 202
+        assert [p.height for p in started[0]] == [10, 12, 14]    # 9 doesn't exist: ignored
+        status, _ = call(f"{base}/api/print", "POST", {"files": [uid]})
+        assert status == 202 and len(started[1]) == 5             # plain ids still print everything
+        status, _ = call(f"{base}/api/print", "POST", {"files": [{"id": uid, "pages": []}]})
+        assert status == 400                                       # every page skipped
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
