@@ -79,6 +79,7 @@ def test_continuous_media_trims_trailing_white():
     ("a.pdf", None, "pdf"), ("a.MD", None, "markdown"), ("a.txt", None, "text"),
     ("a.jpeg", None, "image"), ("job-17", "application/pdf", "pdf"),
     ("job-18", "image/png", "image"), ("job-19", "text/plain", "text"),
+    ("a.csv", None, "csv"), ("a.TSV", None, "csv"), ("job-20", "text/csv", "csv"),
 ])
 def test_detect_kind(name, ctype, kind):
     assert render.detect_kind(name, ctype) == kind
@@ -270,3 +271,37 @@ def test_last_sheet_ends_at_content_but_earlier_sheets_stay_whole(samples):
     assert seq[0].height == sheet
     assert seq[-1].height < sheet
     assert job.sequence(pages, copies=1, media="continuous")[-1].height == pages[-1].height
+
+
+# -- CSV ----------------------------------------------------------------------
+
+def test_csv_table_drops_empty_columns_and_aligns_numbers():
+    from phomemo.render import markdown
+    html = markdown.csv_to_html(
+        "\ufeffID,Title,Subtitle,Amount\n"
+        'tx_1,"Uber, Washington",,-18.05\n'
+        "tx_2,Amtrak,,\"-1,212.40\"\n\n")
+    assert "Subtitle" not in html and "\ufeff" not in html
+    assert "<td>Uber, Washington</td>" in html
+    assert "<td class=num>-1,212.40</td>" in html and "<td>tx_1</td>" in html
+    assert "2 rows" in html
+
+
+def test_csv_semicolons_and_tabs():
+    from phomemo.render import markdown
+    assert "<td>b</td>" in markdown.csv_to_html("x;y\na;b\n")
+    assert "<td>b</td>" in markdown.csv_to_html("x\ty\na\tb\n")
+
+
+def test_wide_csv_turns_sideways_instead_of_clipping(tmp_path):
+    import fitz
+    from phomemo.render import markdown
+    narrow = "a,b\n1,2\n"
+    wide = ",".join(f"Column heading {i}" for i in range(14)) + "\n" + \
+        ",".join(f"value {i} with text" for i in range(14)) + "\n"
+    assert fitz.open("pdf", markdown.csv_to_pdf(narrow))[0].rotation == 0
+    assert fitz.open("pdf", markdown.csv_to_pdf(wide))[0].rotation == 90
+    f = tmp_path / "wide.csv"
+    f.write_text(wide)
+    pages = render.render(str(f))
+    assert pages and all(p.size == (spec.WIDTH_DOTS, spec.page_height_dots("a4")) for p in pages)

@@ -7,8 +7,10 @@ Thermal-specific CSS rules:
 """
 from __future__ import annotations
 
+import csv
 import html
 import io
+import re
 
 import fitz
 from markdown_it import MarkdownIt
@@ -44,6 +46,8 @@ th, td {{ border-right: 1pt solid black; border-bottom: 1pt solid black;
           padding: 0.2em 0.45em; text-align: left; }}
 th {{ font-weight: bold; border-bottom: 2pt solid black; }}
 a {{ color: black; text-decoration: underline; }}
+td.num, th.num {{ text-align: right; }}
+p.csv-count {{ font-size: 0.85em; }}
 """
 
 
@@ -62,16 +66,83 @@ def text_to_html(text: str, monospace: bool = False) -> str:
     return "\n".join(out)
 
 
-def html_to_pdf(body_html: str, page: str = "a4", margin_mm: float = 12.0,
-                font_size: float = 11.0) -> bytes:
+_NUMBER = re.compile(r"[-+]?[£$€]?\s?-?[\d,]*\.?\d+%?")
+
+
+def csv_to_html(text: str) -> str:
+    """A CSV (or TSV) as one table. Columns that are empty in every row are
+    dropped (exports often carry several), and number columns align right so
+    amounts line up. The first row is the header."""
+    text = text.lstrip("\ufeff")                      # Excel's byte-order mark
+    try:
+        dialect = csv.Sniffer().sniff(text[:4096], delimiters=",;\t|")
+    except csv.Error:
+        dialect = csv.excel
+    rows = [r for r in csv.reader(io.StringIO(text), dialect) if any(c.strip() for c in r)]
+    if not rows:
+        return "<p>(empty file)</p>"
+    width = max(len(r) for r in rows)
+    rows = [r + [""] * (width - len(r)) for r in rows]
+    head, body = rows[0], rows[1:]
+    keep = [i for i in range(width) if any(r[i].strip() for r in body)] or list(range(width))
+    numeric = {i for i in keep
+               if any(r[i].strip() for r in body)
+               and all(_NUMBER.fullmatch(r[i].strip()) for r in body if r[i].strip())}
+
+    def cells(row, tag):
+        # the last header cell is tagged so csv_to_pdf can find the table's right edge
+        return "".join(f'<{tag}{" class=num" if i in numeric else ""}'
+                       f'{" id=csv-edge" if tag == "th" and i == keep[-1] else ""}>'
+                       f'{html.escape(row[i].strip())}</{tag}>' for i in keep)
+    out = ["<table class=csv>", f"<tr>{cells(head, 'th')}</tr>"]
+    out += [f"<tr>{cells(r, 'td')}</tr>" for r in body]
+    out.append("</table>")
+    out.append(f"<p class=csv-count>{len(body)} row{'' if len(body) == 1 else 's'}</p>")
+    return "\n".join(out)
+
+
+# Tables wider than the page: try smaller type, then the sheet turned sideways.
+# Below about 7 pt, thermal text fades, so that is the floor.
+CSV_LAYOUTS = [(False, 0.85), (False, 0.7), (True, 0.85), (True, 0.7), (True, 0.65)]
+
+
+def csv_to_pdf(text: str, page: str = "a4", margin_mm: float = 12.0,
+               font_size: float = 11.0) -> bytes:
+    body = csv_to_html(text)
+    layouts = [l for l in CSV_LAYOUTS if not l[0] or spec.PAGE_SIZES_MM[page][1] is not None]
+    for landscape, scale in layouts:
+        if _table_fits(body, page, margin_mm, font_size * scale, landscape):
+            break
+    return html_to_pdf(body, page, margin_mm, font_size * scale, landscape=landscape)
+
+
+def _frame(page: str, margin_mm: float, landscape: bool):
     w_mm, h_mm = spec.PAGE_SIZES_MM[page]
     if h_mm is None:
         h_mm = 2000.0       # continuous: one very long page, trimmed later
+    if landscape:
+        w_mm, h_mm = h_mm, w_mm
     pt = 72 / 25.4
     rect = fitz.Rect(0, 0, w_mm * pt, h_mm * pt)
     m = margin_mm * pt
-    where = rect + (m, m, -m, -m)
+    return rect, rect + (m, m, -m, -m)
 
+
+def _table_fits(body_html: str, page: str, margin_mm: float, font_size: float,
+                landscape: bool) -> bool:
+    rect, where = _frame(page, margin_mm, landscape)
+    story = fitz.Story(html=body_html, user_css=CSS.format(size=font_size))
+    story.place(where)
+    edge = []
+    story.element_positions(lambda p: edge.append(p.rect[2]) if p.id == "csv-edge" else None)
+    return not edge or max(edge) <= where.x1 + 0.5
+
+
+def html_to_pdf(body_html: str, page: str = "a4", margin_mm: float = 12.0,
+                font_size: float = 11.0, landscape: bool = False) -> bytes:
+    """landscape: lay out across the sheet's length, then turn each page a
+    quarter so it still prints on the sheet as it feeds."""
+    rect, where = _frame(page, margin_mm, landscape)
     story = fitz.Story(html=body_html, user_css=CSS.format(size=font_size))
     buf = io.BytesIO()
     writer = fitz.DocumentWriter(buf)
@@ -82,4 +153,9 @@ def html_to_pdf(body_html: str, page: str = "a4", margin_mm: float = 12.0,
         story.draw(device)
         writer.end_page()
     writer.close()
-    return buf.getvalue()
+    if not landscape:
+        return buf.getvalue()
+    doc = fitz.open("pdf", buf.getvalue())
+    for pg in doc:
+        pg.set_rotation(90)
+    return doc.tobytes()

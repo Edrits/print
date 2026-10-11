@@ -1,6 +1,6 @@
 # phomemo-m08f
 
-Print PDFs, Markdown, plain text and photos to a **Phomemo M08F** A4 thermal
+Print PDFs, Markdown, plain text, CSV tables and photos to a **Phomemo M08F** A4 thermal
 printer from a Mac. No vendor app, account or watermark. It can also appear as
 a normal printer in every app's print dialog.
 
@@ -112,7 +112,7 @@ Thermal paper is pure black and white, so every grey has to be resolved:
 
 | content | default | why |
 |---|---|---|
-| Markdown, text | `threshold` | crisp strokes, no speckle |
+| Markdown, text, CSV | `threshold` | crisp strokes, no speckle |
 | PDF | `hybrid` | threshold for text, Atkinson inside each embedded image |
 | photos | `atkinson` | keeps highlights clean and shadows punchy on thermal |
 

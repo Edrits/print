@@ -15,21 +15,23 @@ from PIL import Image
 from .. import raster, spec
 from . import images, markdown, pdf
 
-KINDS = ("pdf", "markdown", "text", "image")
+KINDS = ("pdf", "markdown", "text", "csv", "image")
 
 _EXT = {
     ".pdf": "pdf",
     ".md": "markdown", ".markdown": "markdown", ".mdown": "markdown",
     ".txt": "text", ".text": "text", ".log": "text",
+    ".csv": "csv", ".tsv": "csv",
     ".png": "image", ".jpg": "image", ".jpeg": "image", ".gif": "image",
     ".bmp": "image", ".tif": "image", ".tiff": "image", ".webp": "image",
 }
 _MIME_PREFIX = {
     "application/pdf": "pdf", "text/markdown": "markdown",
+    "text/csv": "csv", "text/tab-separated-values": "csv",
     "text/plain": "text", "image/": "image",
 }
 DEFAULT_DITHER = {"pdf": "hybrid", "markdown": "threshold",
-                  "text": "threshold", "image": "atkinson"}
+                  "text": "threshold", "csv": "threshold", "image": "atkinson"}
 
 
 @dataclass
@@ -83,6 +85,11 @@ def _grey_pages(path: str, kind: str, opts: RenderOptions) -> list[tuple[Image.I
     page_h = spec.page_height_dots(opts.media)
     if kind == "pdf":
         return list(pdf.pdf_pages(path, antialias=opts.antialias))
+    if kind == "csv":
+        text = Path(path).read_text(encoding="utf-8-sig", errors="replace")
+        doc = markdown.csv_to_pdf(text, page=opts.media, margin_mm=opts.margin_mm,
+                                  font_size=opts.font_size)
+        return [(g, []) for g, _ in pdf.pdf_pages(doc)]
     if kind in ("markdown", "text"):
         text = Path(path).read_text(encoding="utf-8", errors="replace") if path != "-" \
             else __import__("sys").stdin.read()

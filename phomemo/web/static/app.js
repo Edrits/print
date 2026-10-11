@@ -456,12 +456,12 @@
 
   const dropZone = (compact) => compact
     ? `<div class="tp-drop tp-drop--compact" data-action="pick" role="button" tabindex="0"><div class="tp-drop-icon">${icon("up")}</div><div><p class="tp-drop-title">Add more files</p><p class="tp-drop-hint">Drop anywhere, <span class="tp-link">browse</span>, or paste text with ⌘V</p></div></div>`
-    : `<div class="tp-drop" data-action="pick" role="button" tabindex="0"><div class="tp-drop-icon">${icon("up")}</div><p class="tp-drop-title">Drop files to print</p><p class="tp-drop-hint">or <span class="tp-link">choose files</span> · paste text with ⌘V</p><div class="tp-drop-types"><span class="tp-tag">pdf</span><span class="tp-tag">md</span><span class="tp-tag">txt</span><span class="tp-tag">jpg</span><span class="tp-tag">png</span></div></div>`;
+    : `<div class="tp-drop" data-action="pick" role="button" tabindex="0"><div class="tp-drop-icon">${icon("up")}</div><p class="tp-drop-title">Drop files to print</p><p class="tp-drop-hint">or <span class="tp-link">choose files</span> · paste text with ⌘V</p><div class="tp-drop-types"><span class="tp-tag">pdf</span><span class="tp-tag">md</span><span class="tp-tag">txt</span><span class="tp-tag">csv</span><span class="tp-tag">jpg</span><span class="tp-tag">png</span></div></div>`;
 
   function viewMain() {
     const progress = viewNotice() + viewProgress();
     if (!state.files.length) {
-      return `${progress}<div class="tp-empty"><div><h1 class="tp-display">Ready to print</h1><p class="tp-caption" style="font-size:14px;line-height:20px;margin-top:var(--space-2)">Add PDFs, Markdown, text or photos. You'll see every sheet before anything prints.</p></div>${dropZone(false)}</div>`;
+      return `${progress}<div class="tp-empty"><div><h1 class="tp-display">Ready to print</h1><p class="tp-caption" style="font-size:14px;line-height:20px;margin-top:var(--space-2)">Add PDFs, Markdown, text, CSV or photos. You'll see every sheet before anything prints.</p></div>${dropZone(false)}</div>`;
     }
     return `${progress}${shownFiles().length ? viewSummary() + viewPayout() : ""}${dropZone(true)}${viewQueue()}`;
   }
