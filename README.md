@@ -81,25 +81,41 @@ printer. It only listens on this Mac, and only answers to `127.0.0.1` or
   next; the preview outlines the next sheet. Pages you skip mid-run are
   dropped, and a failed sheet can be tried again without reprinting the others.
 
-### As an app in the Dock
+### As a Mac app: Thermal
 
 ```bash
-phomemo ui --make-app
+./.venv/bin/pip install -e ".[app]"    # adds pywebview
+phomemo app --make-app
 ```
 
 Builds **Thermal.app** in `~/Applications` (Spotlight finds it; drag it to the
-Dock or desktop). Opening it starts the print screen and opens it in your
-default browser; clicking it again reopens the page. Quit it from the Dock, or
-just close the page: the server stops by itself three minutes later and the app
-leaves the Dock. The app only asks macOS to open a localhost link; it has no
-control over your browser.
+Dock or desktop). It is the print screen in its own window: one Dock icon, no
+browser tab, and closing the window quits (it asks first if a print is
+running). `phomemo app` opens the same window from Terminal.
+
+Inside, the page still talks to a small server, but only the window can use
+it: it listens on 127.0.0.1 and refuses any request without a secret made
+fresh at each launch, which only the window is given.
 
 The first Bluetooth print asks "Thermal would like to use Bluetooth": allow it.
 If you chose Don't Allow, the Printer panel says Bluetooth is blocked and
 offers **Ask again** (macOS asks once more) or **Open settings**.
-The app uses this project's `.venv`, so run `--make-app` again if you move the
-project (macOS may ask for Bluetooth again). Server log:
+The app runs this project's `.venv`, so run `--make-app` again if you move the
+project (macOS may ask for Bluetooth again). Building needs the Xcode Command
+Line Tools (`xcode-select --install`) for clang. Log:
 `~/Library/Logs/Thermal.log`.
+
+**Backup: Thermal Web.** If the window ever misbehaves, the same print screen
+also runs in a browser tab:
+
+```bash
+phomemo ui --make-app      # builds ~/Applications/Thermal Web.app
+```
+
+Opening Thermal Web starts `phomemo ui` and opens the page in your default
+browser; close the tab and its server stops three minutes later. It uses its
+own port (8632), so it can run alongside Thermal, and macOS asks for Bluetooth
+for it separately. Log: `~/Library/Logs/Thermal Web.log`.
 
 ## In every app's print dialog
 

@@ -17,6 +17,7 @@ dependencies = [
 
 [project.optional-dependencies]
 ble = ["bleak>=0.22"]
+app = ["pywebview>=5", "bleak>=0.22"]
 dev = ["pytest>=8", "bleak>=0.22"]
 
 [project.scripts]

@@ -1,16 +1,17 @@
 # CLAUDE.md
 
-Prints PDFs, Markdown, text, CSV and photos to a **Phomemo M08F** A4 thermal printer from a Mac, over USB or Bluetooth LE. Three front ends share one pipeline: the `phomemo` CLI, a local web print screen (`phomemo ui`, wrapped as **Thermal.app**), and a print-dialog printer (`phomemo serve`, via macOS's `ippeveprinter`).
+Prints PDFs, Markdown, text, CSV and photos to a **Phomemo M08F** A4 thermal printer from a Mac, over USB or Bluetooth LE. Front ends share one pipeline: the `phomemo` CLI, the print screen (a web page served by `phomemo/web`; in a browser tab via `phomemo ui`, or in its own Mac window via `phomemo app`, which **Thermal.app** runs), and a print-dialog printer (`phomemo serve`, via macOS's `ippeveprinter`).
 
 ## Commands
 
 ```bash
-python3 -m venv .venv && ./.venv/bin/pip install -e ".[dev]"   # setup
+python3 -m venv .venv && ./.venv/bin/pip install -e ".[dev,app]"   # setup (app = pywebview)
 ./.venv/bin/python -m pytest -q                                # all tests, ~20 s, no printer needed
 ./.venv/bin/phomemo ui --no-open --port 8640 --dry-run /tmp/job.bin   # print screen, no printer
 ./.venv/bin/phomemo preview file.pdf --open                    # PNGs exactly as printed
 ./.venv/bin/phomemo print file.md --dry-run job.bin            # ESC/POS bytes to a file
-./.venv/bin/phomemo ui --make-app                              # rebuild ~/Applications/Thermal.app
+./.venv/bin/phomemo app                                        # the print screen in a native window
+./.venv/bin/phomemo app --make-app                             # rebuild ~/Applications/Thermal.app (needs clang)
 ```
 
 There is no linter config. `pyflakes phomemo tests` should be clean. CI (`.github/workflows/tests.yml`) runs pytest on Python 3.9 and 3.12, Ubuntu and macOS, so keep 3.9 syntax (`from __future__ import annotations` makes `X | None` hints safe; don't use it at runtime).
@@ -25,7 +26,8 @@ There is no linter config. `pyflakes phomemo tests` should be clean. CI (`.githu
 | `phomemo/transport.py` | the only code that opens a port: USB serial, Bluetooth (`BlePort`) or dry-run file |
 | `phomemo/ble.py` | Bluetooth LE: discovery, credit flow control, paper reports, eject. `ble_job.py` runs one job in a child process |
 | `phomemo/web/` | `phomemo ui`: stdlib HTTP server (`__init__.py`) and a no-build plain-JS page (`static/app.js`) |
-| `phomemo/macapp.py` | builds Thermal.app (AppleScript applet that starts `phomemo ui`) |
+| `phomemo/desktop.py` | `phomemo app`: pywebview window + the web server in-process, gated by a per-launch secret cookie |
+| `phomemo/macapp.py` | builds Thermal.app: a clang-compiled launcher that embeds this venv's Python and runs `phomemo.desktop` in-process (one Dock icon, Thermal owns Bluetooth permission). Also the backup **Thermal Web.app** (`make_web_app`): an AppleScript applet that starts `phomemo ui` on 8632 and opens the browser |
 | `phomemo/ipp.py` | `phomemo serve` and the per-job hook `phomemo-ipp-job` |
 | `tests/escpos_decode.py` | independent decoder: rebuilds the printed image from job bytes |
 
@@ -49,13 +51,15 @@ Measured on hardware. Read the comments in `ble.py` and `job.py` before changing
 ## Web UI conventions
 
 - **Design:** follow the **Thermal** design system (`static/thermal.css`, `tp-` classes; app-only additions go in `app.css`). Neutral ink on paper, and the one accent `--heat` is reserved for print actions and progress. Panels are flat. Use sentence case, no emoji, and mono numbers with units.
-- **Server:** stdlib only, and it binds 127.0.0.1. Requests must carry a local `Host` (DNS-rebinding guard), and writes must be same-origin. Uploads live in memory and a temp dir; a page left open re-uploads after a server restart (the `instance` id changes).
+- **Server:** stdlib only, and it binds 127.0.0.1. Requests must carry a local `Host` (DNS-rebinding guard), and writes must be same-origin. In Thermal.app (`App(token=…)`) every request also needs the `thermal` cookie, which the window gets from its first load of `/?key=…`. Uploads live in memory and a temp dir; a page left open re-uploads after a server restart (the `instance` id changes).
+- **Native window:** `draw()` uses `requestAnimationFrame`, which WebKit pauses while the window is hidden. To check the window from a script, call `window.show()` first. pywebview's `evaluate_js` doesn't wait for promises, so use synchronous JS.
 - **Page rendering:** `app.js` redraws regions only when their markup changes (`region()`), so polling never steals focus. Keep that pattern.
 - **Print requests:** `/api/print` takes `files: [id | {id, pages: [index…]}]`. `/api/job/next` takes the same `files`, so pages skipped mid-run are dropped. `Job.info()` reports `next` and `printed` as `[file id, page index]` pairs for the preview highlight.
 
 ## Working on this machine
 
-- **Thermal.app runs the server** from this repo's `.venv`: `ui --from-app --port 8632`. Its log is `~/Library/Logs/Thermal.log`, and Bluetooth jobs log their progress there.
-- **Restarting Thermal:** server code changes need a restart to take effect. Before restarting, check `curl -s http://127.0.0.1:8632/api/job`. If `state` is `printing` or `waiting`, someone is mid-print: ask first, because a restart drops the job.
+- **Thermal.app** is one process, `~/Applications/Thermal.app/Contents/MacOS/Thermal`, running `phomemo.desktop` from this repo's `.venv` (editable install), with its server on 127.0.0.1:8634. Its log is `~/Library/Logs/Thermal.log`, and Bluetooth jobs log their progress there.
+- **Thermal Web.app** (the backup, bundle id `…thermal.web`) runs `phomemo ui --from-app --port 8632`. Its API is open to curl, so check `curl -s http://127.0.0.1:8632/api/job` before restarting it. Its log is `~/Library/Logs/Thermal Web.log`.
+- **Restarting Thermal:** Python changes need a relaunch to take effect; only C launcher or Info.plist changes need `--make-app`. You can't `curl` its API without the secret, so check the log or ask before quitting it. If a print is running or waiting for the next sheet, quitting drops it. To quit: `osascript -e 'quit app "Thermal"'`, then `open ~/Applications/Thermal.app`.
 - **Testing without paper:** never print on the real printer to test unless asked. Use `--dry-run`, or the fake-printer server pattern: monkeypatch `web.transport.open_port` on a separate port. The tests' `_sheet_app` helper does the same.
 - **Git:** commit messages explain the why in plain prose. The owner pushes to `main`.

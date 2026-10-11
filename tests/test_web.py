@@ -158,10 +158,13 @@ def test_ask_again_resets_thermal_then_uses_bluetooth(tmp_path, monkeypatch):
     class Done:
         returncode, stderr = 0, ""
     monkeypatch.setattr(web.subprocess, "run", lambda args, **kw: calls.append(args) or Done())
-    app = web.App(dry_run=tmp_path / "j.bin", from_app=True)
-    monkeypatch.setattr(app, "check_ble", lambda: "checking")
-    assert app.ble_ask_again() == "checking"
-    assert calls == [["tccutil", "reset", "BluetoothAlways", macapp.BUNDLE_ID]]
+    window = web.App(dry_run=tmp_path / "j.bin", from_app=True, token="t")   # Thermal.app
+    backup = web.App(dry_run=tmp_path / "j.bin", from_app=True)              # Thermal Web.app
+    for app in (window, backup):
+        monkeypatch.setattr(app, "check_ble", lambda: "checking")
+        assert app.ble_ask_again() == "checking"
+    assert calls == [["tccutil", "reset", "BluetoothAlways", macapp.BUNDLE_ID],
+                     ["tccutil", "reset", "BluetoothAlways", macapp.WEB_BUNDLE_ID]]
 
 
 def test_settings_opens_the_bluetooth_pane(tmp_path, monkeypatch):
@@ -332,3 +335,34 @@ def test_malformed_requests_are_400_not_crashes(server):
         assert call(f"{base}/api/print", "POST", body)[0] == 400
     assert call(f"{base}/api/print", "POST", {"files": [["not", "an", "id"], {"id": 5}]})[0] == 400
     assert call(f"{base}/api/print", "POST", {"files": "abc"})[0] == 400
+
+
+def test_window_secret_gates_every_request(tmp_path):
+    """Thermal.app's server: only the window, which got the secret, gets in."""
+    app = web.App(dry_run=tmp_path / "j.bin", token="s3cret")
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), type("H", (web.Handler,), {"app": app}))
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{httpd.server_port}"
+    try:
+        assert call(f"{base}/api/status")[0] == 403
+        assert call(f"{base}/")[0] == 403
+        assert call(f"{base}/?key=wrong")[0] == 403
+        assert call(f"{base}/api/print", "POST", {"files": []})[0] == 403
+
+        class NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, *a, **k):
+                return None
+        opener = urllib.request.build_opener(NoRedirect)
+        with pytest.raises(urllib.error.HTTPError) as e:
+            opener.open(f"{base}/?key=s3cret")
+        assert e.value.code == 303 and e.value.headers["Location"] == "/"
+        cookie = e.value.headers["Set-Cookie"]
+        assert cookie.startswith("thermal=s3cret;") and "HttpOnly" in cookie and "SameSite=Strict" in cookie
+
+        ok = {"Cookie": "thermal=s3cret"}
+        assert call(f"{base}/api/status", headers=ok)[0] == 200
+        assert call(f"{base}/", headers=ok)[0] == 200
+        assert call(f"{base}/api/status", headers={"Cookie": "thermal=nope"})[0] == 403
+    finally:
+        httpd.shutdown()
+        httpd.server_close()

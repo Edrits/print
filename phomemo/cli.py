@@ -182,14 +182,29 @@ def cmd_serve(a: argparse.Namespace) -> int:
                      media=a.media)
 
 
+def _make_app(app_dir: str, web_port: int | None = None) -> int:
+    """Thermal.app (native window), or with web_port the backup Thermal Web.app."""
+    from . import macapp
+    if web_port is None:
+        app, log = macapp.make_app(Path(app_dir).expanduser()), macapp.LOG
+    else:
+        app, log = macapp.make_web_app(Path(app_dir).expanduser(), port=web_port), macapp.WEB_LOG
+    print(f"Built {app}\n"
+          "Open it from Applications or Spotlight, or drag it to the Dock or desktop.\n"
+          f"Its log: {log}")
+    return 0
+
+
+def cmd_app(a: argparse.Namespace) -> int:
+    if a.make_app:
+        return _make_app(a.app_dir)
+    from . import desktop
+    return desktop.main(device=a.device)
+
+
 def cmd_ui(a: argparse.Namespace) -> int:
     if a.make_app:
-        from . import macapp
-        app = macapp.make_app(Path(a.app_dir).expanduser(), port=a.port)
-        print(f"Built {app}\n"
-              "Open it from Applications or Spotlight, or drag it to the Dock or desktop.\n"
-              f"Its server log: {macapp.LOG}")
-        return 0
+        return _make_app(a.app_dir, web_port=a.port)
     from . import web
     return web.serve(port=a.port, open_browser=not a.no_open, device=a.device,
                      dry_run=Path(a.dry_run) if a.dry_run else None,
@@ -255,11 +270,20 @@ def build_parser() -> argparse.ArgumentParser:
     pu.add_argument("--idle-exit", type=float, metavar="SECONDS",
                     help="stop this long after the last page closes (keep it above 60)")
     pu.add_argument("--make-app", action="store_true",
-                    help="build Thermal.app, a Dock icon that starts this and opens the page")
+                    help="build Thermal Web.app, a Dock icon that opens this in the browser "
+                         "(the backup to Thermal.app)")
     pu.add_argument("--app-dir", default="~/Applications",
                     help="with --make-app: where to put it (default ~/Applications)")
     pu.add_argument("--from-app", action="store_true", help=argparse.SUPPRESS)
     pu.set_defaults(func=cmd_ui)
+
+    pa = sub.add_parser("app", help="the print screen in its own Mac window (needs .[app])")
+    pa.add_argument("--device", help="serial device; default autodetects at each job")
+    pa.add_argument("--make-app", action="store_true",
+                    help="build Thermal.app: this window as a Dock app")
+    pa.add_argument("--app-dir", default="~/Applications",
+                    help="with --make-app: where to put it (default ~/Applications)")
+    pa.set_defaults(func=cmd_app)
     return p
 
 

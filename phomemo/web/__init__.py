@@ -9,6 +9,7 @@ Listens on 127.0.0.1 only: anyone who can reach it can print.
 """
 from __future__ import annotations
 
+import hmac
 import io
 import json
 import queue
@@ -24,6 +25,7 @@ import time
 import uuid
 import webbrowser
 from dataclasses import dataclass, field
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse, parse_qs
@@ -94,8 +96,12 @@ class Job:
 
 class App:
     def __init__(self, dry_run: Path | None = None, device: str | None = None,
-                 from_app: bool = False):
+                 from_app: bool = False, token: str | None = None):
         self.from_app = from_app          # started by Thermal.app, not Terminal
+        # Thermal.app's window: every request must carry this secret (a cookie
+        # the window gets on its first load), so nothing else on the Mac can
+        # use the server. None for `phomemo ui`, which a browser tab opens.
+        self.token = token
         self.last_seen = time.monotonic() # any request: an open page polls every 2 s
         self.dir = Path(tempfile.mkdtemp(prefix="phomemo-ui-"))
         # Uploads live only in this process. A page left open across a restart
@@ -275,8 +281,9 @@ class App:
         would affect everything run from Terminal."""
         if not self.from_app:
             raise RuntimeError("only Thermal.app can ask again; use System Settings")
-        from ..macapp import BUNDLE_ID
-        done = subprocess.run(["tccutil", "reset", "BluetoothAlways", BUNDLE_ID],
+        from ..macapp import BUNDLE_ID, WEB_BUNDLE_ID
+        bundle = BUNDLE_ID if self.token else WEB_BUNDLE_ID   # the window has a token
+        done = subprocess.run(["tccutil", "reset", "BluetoothAlways", bundle],
                               capture_output=True, text=True)
         if done.returncode:
             raise RuntimeError("macOS wouldn't reset it: "
@@ -394,6 +401,32 @@ class Handler(BaseHTTPRequestHandler):
             return False
         return url.hostname in _LOCAL_HOSTS and port in (None, self.server.server_address[1])
 
+    def _authorized(self) -> bool:
+        """With a token, the request must carry it as the `thermal` cookie."""
+        if self.app.token is None:
+            return True
+        jar = SimpleCookie()
+        try:
+            jar.load(self.headers.get("Cookie", ""))
+        except Exception:
+            return False
+        sent = jar["thermal"].value if "thermal" in jar else ""
+        return hmac.compare_digest(sent.encode(), self.app.token.encode())
+
+    def _sign_in(self, url) -> bool:
+        """The window's first load is /?key=TOKEN: swap the key for a cookie and
+        reload without it, so the secret never sits in the page's address."""
+        key = parse_qs(url.query).get("key", [""])[0]
+        if self.app.token is None or not hmac.compare_digest(key.encode(), self.app.token.encode()):
+            return False
+        self.send_response(303)
+        self.send_header("Location", "/")
+        self.send_header("Set-Cookie", f"thermal={self.app.token}; Path=/; HttpOnly; SameSite=Strict")
+        self.send_header("Content-Length", "0")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        return True
+
     def _same_origin(self) -> bool:
         """Refuse writes from other sites the browser happens to have open."""
         origin = self.headers.get("Origin")
@@ -406,6 +439,10 @@ class Handler(BaseHTTPRequestHandler):
         if not self._local_host():
             return self._error(403, "unknown host")
         url = urlparse(self.path)
+        if url.path == "/" and self._sign_in(url):
+            return
+        if not self._authorized():
+            return self._error(403, "open this from Thermal")
         parts = [p for p in url.path.split("/") if p]
         if url.path == "/":
             return self._static("index.html")
@@ -428,7 +465,7 @@ class Handler(BaseHTTPRequestHandler):
         self._error(404, "not found")
 
     def do_POST(self):
-        if not (self._local_host() and self._same_origin()):
+        if not (self._local_host() and self._same_origin() and self._authorized()):
             return self._error(403, "cross-origin request refused")
         parts = [p for p in urlparse(self.path).path.split("/") if p]
         try:
@@ -471,7 +508,7 @@ class Handler(BaseHTTPRequestHandler):
         self._error(404, "not found")
 
     def do_DELETE(self):
-        if not (self._local_host() and self._same_origin()):
+        if not (self._local_host() and self._same_origin() and self._authorized()):
             return self._error(403, "cross-origin request refused")
         parts = [p for p in urlparse(self.path).path.split("/") if p]
         if parts[:2] == ["api", "files"] and len(parts) == 3:
