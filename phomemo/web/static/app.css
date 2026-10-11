@@ -26,6 +26,15 @@
 .tp-sheet img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: top; image-rendering: auto; }
 .tp-sheet--long { -webkit-mask: linear-gradient(#000 80%, transparent); mask: linear-gradient(#000 80%, transparent); }
 .tp-sheet--pending { background: var(--sheet); opacity: .5; }
+/* skipping pages: an x on hover; a skipped page fades and keeps a restore button */
+.tp-sheet-wrap { position: relative; }
+.tp-sheet-skip { position: absolute; top: 4px; right: 4px; z-index: 1; width: 22px; height: 22px; padding: 0; display: grid; place-items: center; border: 1px solid var(--line); border-radius: var(--radius-xs); background: var(--surface); color: var(--ink); cursor: pointer; opacity: 0; transition: opacity .12s; }
+.tp-sheet-skip .tp-icon { width: 12px; height: 12px; }
+.tp-sheet-skip:hover { background: var(--surface-sunken); }
+.tp-sheet-wrap:hover .tp-sheet-skip, .tp-sheet-skip:focus-visible, .tp-sheet-wrap--skipped .tp-sheet-skip { opacity: 1; }
+.tp-sheet-skip:disabled { display: none; }
+.tp-sheet--skipped { opacity: .3; filter: grayscale(1); box-shadow: none; outline: 1px dashed var(--ink-muted); outline-offset: 0; }
+.tp-sheet-wrap--skipped .tp-sheet-cap { text-decoration: line-through; }
 .tp-payout { max-width: 100%; }
 .tp-payout { padding-top: var(--space-4); }
 /* the name never widens its group: it takes the width of the sheets below and truncates */

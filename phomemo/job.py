@@ -33,6 +33,13 @@ def sequence(pages: Sequence[Image.Image], copies: int, media: str):
     return out
 
 
+def one_per_sheet(pages: Sequence[Image.Image], copies: int):
+    """Pages in send order for one Bluetooth job per sheet: each is trimmed like
+    a last page, since each is the last thing its job sends."""
+    keep = spec.mm_to_dots(END_MARGIN_MM)
+    return [raster.trim_bottom(p, keep=keep) for _ in range(max(1, copies)) for p in pages]
+
+
 def build(pages: Sequence[Image.Image], opts: JobOptions, media: str = "a4") -> bytes:
     for i, page in enumerate(pages):
         if page.mode != "1" or page.width != spec.WIDTH_DOTS:
