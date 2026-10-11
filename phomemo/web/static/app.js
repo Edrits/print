@@ -150,7 +150,9 @@
   function scrollToTop() { $("main").scrollTo({ top: 0 }); window.scrollTo({ top: 0 }); }
   async function cancelJob() { await postJSON("/api/job/cancel", {}).catch(() => {}); poll(); }
   async function nextSheet() {
-    try { await postJSON("/api/job/next", {}); state.notice = null; scrollToTop(); }
+    // Send what's still wanted: pages skipped since the job started are dropped.
+    const files = readyFiles().map((f) => ({ id: f.id, pages: kept(f) }));
+    try { await postJSON("/api/job/next", { files }); state.notice = null; scrollToTop(); }
     catch (e) { state.notice = `Couldn't print the next sheet: ${e.message}`; }
     poll();
   }
@@ -405,7 +407,11 @@
     const total = order.reduce((s, f) => s + kept(f).length, 0);
     const anySkipped = shownFiles().some((f) => f.skip.length);
     // Bluetooth to continuous paper sends the whole job at once: no current page to point at.
-    const live = (j.state === "printing" || j.state === "waiting") && (j.via !== "ble" || j.per_sheet) && j.kind !== "check" && settings.copies === 1 && j.total === total;
+    const live = j.state === "printing" && j.via !== "ble" && j.kind !== "check" && settings.copies === 1 && j.total === total;
+    // Per-sheet Bluetooth jobs name the next page and the printed ones directly.
+    const sheetJob = j.per_sheet && (j.state === "printing" || resumable()) && j.next;
+    const isNext = (f, pi) => sheetJob && j.next[0] === f.id && j.next[1] === pi;
+    const isPrinted = (f, pi) => sheetJob && !isNext(f, pi) && (j.printed || []).some(([id, i]) => id === f.id && i === pi);
     let n = 0;
     const groups = state.files.filter((f) => f.status !== "error").map((f, gi) => {
       const fi = state.files.indexOf(f);
@@ -421,9 +427,11 @@
             return `<div class="tp-sheet-wrap tp-sheet-wrap--skipped"><button class="tp-sheet tp-sheet--skipped ${tall ? "tp-sheet--long" : ""}" style="aspect-ratio:${tall ? "210/420" : ratio}" data-action="zoom" data-file="${fi}" data-page="${pi}" aria-label="Skipped: page ${pi + 1} of ${esc(f.name)}"><img src="${thumb(f, pi)}" alt="" loading="lazy" draggable="false"></button>${skip} aria-label="Print page ${pi + 1} of ${esc(f.name)} again" title="Print this page">${icon("undo")}</button><div class="tp-sheet-cap"><span>Skipped</span></div></div>`;
           }
           const idx = n++;
-          const cls = [tall && "tp-sheet--long", live && idx < j.page && "tp-sheet--done", live && idx === j.page && "tp-sheet--active",
-            state.selected === f.id && !live && "tp-sheet--active"].filter(Boolean).join(" ");
-          return `<div class="tp-sheet-wrap">${live ? "" : `${skip} aria-label="Skip page ${pi + 1} of ${esc(f.name)}" title="Skip this page">${icon("x")}</button>`}<button class="tp-sheet ${cls}" style="aspect-ratio:${tall ? "210/420" : ratio}" data-action="zoom" data-file="${fi}" data-page="${pi}" aria-label="Page ${idx + 1} of ${total}, ${esc(f.name)}"><img src="${thumb(f, pi)}" alt="" loading="lazy" draggable="false"></button><div class="tp-sheet-cap"><span>${idx + 1} / ${total}</span></div></div>`;
+          const cls = [tall && "tp-sheet--long", ((live && idx < j.page) || isPrinted(f, pi)) && "tp-sheet--done",
+            ((live && idx === j.page) || isNext(f, pi)) && "tp-sheet--active",
+            state.selected === f.id && !live && !sheetJob && "tp-sheet--active"].filter(Boolean).join(" ");
+          const cap = isNext(f, pi) ? (j.state === "printing" ? "Printing" : "Next") : isPrinted(f, pi) ? "Printed" : `${idx + 1} / ${total}`;
+          return `<div class="tp-sheet-wrap">${live ? "" : `${skip} aria-label="Skip page ${pi + 1} of ${esc(f.name)}" title="Skip this page">${icon("x")}</button>`}<button class="tp-sheet ${cls}" style="aspect-ratio:${tall ? "210/420" : ratio}" data-action="zoom" data-file="${fi}" data-page="${pi}" aria-label="Page ${idx + 1} of ${total}, ${esc(f.name)}"><img src="${thumb(f, pi)}" alt="" loading="lazy" draggable="false"></button><div class="tp-sheet-cap"><span>${cap}</span></div></div>`;
         }).join("");
       }
       return `${gi ? '<div class="tp-split"></div>' : ""}<div class="tp-group"><div class="tp-file-label" title="${esc(f.name)}">${esc(f.name)}</div><div class="tp-roll">${sheets}</div></div>`;

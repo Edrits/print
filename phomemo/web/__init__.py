@@ -77,6 +77,7 @@ class Job:
     # Bluetooth on sheet media: one job per sheet; "waiting" between them.
     per_sheet: bool = False
     sheets: list = field(default_factory=list, repr=False)   # all sheets, in order
+    keys: list = field(default_factory=list, repr=False)     # (file id, page index) per sheet
     density: int = 5
 
     def info(self) -> dict:
@@ -84,7 +85,11 @@ class Job:
                 "error": self.error, "started": self.started, "files": self.files,
                 "via": self.via, "phase": self.phase, "kind": self.kind,
                 "per_sheet": self.per_sheet,
-                "remaining": self.total - self.page if self.sheets else 0}
+                "remaining": self.total - self.page if self.sheets else 0,
+                # per-sheet jobs: which (file id, page index) is next, and which are done,
+                # so the preview can point at the right sheet after pages are skipped
+                "next": list(self.keys[self.page]) if self.sheets and self.page < len(self.keys) else None,
+                "printed": [list(k) for k in self.keys[:self.page]]}
 
 
 class App:
@@ -126,7 +131,9 @@ class App:
                 "job": self.job.info()}
 
     def start_job(self, pages: list[Image.Image], density: int, copies: int,
-                  media: str, via: str, files: list[str]) -> Job:
+                  media: str, via: str, files: list[str], keys: list | None = None) -> Job:
+        """keys: (file id, page index) for each page, so a per-sheet job can
+        drop pages the person skips while it waits between sheets."""
         with self.lock:
             if self.job.state == "printing":
                 raise RuntimeError("a job is already printing")
@@ -137,6 +144,8 @@ class App:
             if via == "ble" and spec.page_height_dots(media) is not None:
                 job.per_sheet, job.density = True, density
                 job.sheets = jobmod.one_per_sheet(pages, copies)
+                if keys is not None and len(keys) == len(pages):
+                    job.keys = [k for _ in range(max(1, copies)) for k in keys]
             self.job = job
         if job.per_sheet:
             self.submit(lambda: self._run_sheet(job))
@@ -144,13 +153,23 @@ class App:
             self.submit(lambda: self._run(job, pages, density, copies, media, via))
         return job
 
-    def next_sheet(self) -> Job:
+    def next_sheet(self, keep: set | None = None) -> Job:
         """Print the next sheet of a per-sheet job: after the person loads it, or
-        to try a sheet again after an error."""
+        to try a sheet again after an error. keep: the (file id, page index)
+        pages still wanted; sheets not yet printed that aren't in it are dropped."""
         with self.lock:
             job = self.job
             if job.state not in ("waiting", "error") or not job.sheets:
                 raise RuntimeError("no sheets are waiting to print")
+            if keep is not None and job.keys:
+                left = [(s, k) for s, k in zip(job.sheets[job.page:], job.keys[job.page:])
+                        if tuple(k) in keep]
+                job.sheets = job.sheets[:job.page] + [s for s, _ in left]
+                job.keys = job.keys[:job.page] + [k for _, k in left]
+                job.total = len(job.sheets)
+                if job.page >= job.total:
+                    job.state, job.sheets = "done", []
+                    return job
             job.state, job.error, job.phase = "printing", None, "sending"
         self.submit(lambda: self._run_sheet(job))
         return job
@@ -424,7 +443,11 @@ class Handler(BaseHTTPRequestHandler):
             if parts == ["api", "job", "cancel"]:
                 return self._json(self.app.cancel().info())
             if parts == ["api", "job", "next"]:
-                return self._json(self.app.next_sheet().info(), 202)
+                req = json.loads(self._body() or b"{}")
+                keep = None
+                if "files" in req:
+                    keep = {k for _, _, ks in _selection(self.app, req) for k in ks}
+                return self._json(self.app.next_sheet(keep).info(), 202)
         except RuntimeError as e:
             return self._error(409, str(e))
         except ValueError as e:
@@ -444,23 +467,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def _print(self, req: dict):
         media = req.get("media") if req.get("media") in spec.PAGE_SIZES_MM else "a4"
-        pages, names = [], []
-        for entry in req.get("files", []):
-            # an id, or {id, pages: [index, ...]} to print only some of its pages
-            uid, which = (entry.get("id"), entry.get("pages")) if isinstance(entry, dict) else (entry, None)
-            up = self.app.uploads.get(uid)
-            if not (up and up.pages):
-                continue
-            chosen = up.pages if which is None else \
-                [up.pages[i] for i in which if isinstance(i, int) and 0 <= i < len(up.pages)]
-            if chosen:
-                pages.extend(chosen)
-                names.append(up.name)
+        pages, names, keys = [], [], []
+        for up, chosen, ks in _selection(self.app, req):
+            pages.extend(chosen)
+            names.append(up.name)
+            keys.extend(ks)
         if not pages:
             raise ValueError("nothing to print")
         job = self.app.start_job(pages, _clamp(req.get("density"), 1, 8, 5),
                                  _clamp(req.get("copies"), 1, 99, 1), media,
-                                 req.get("via", "usb"), names)
+                                 req.get("via", "usb"), names, keys)
         self._json(job.info(), 202)
 
     def _static(self, name: str):
@@ -468,6 +484,20 @@ class Handler(BaseHTTPRequestHandler):
         if path.suffix not in _STATIC_TYPES or not path.is_file():
             return self._error(404, "not found")
         self._send(200, path.read_bytes(), _STATIC_TYPES[path.suffix])
+
+
+def _selection(app: App, req: dict):
+    """(upload, pages, [(file id, page index)]) for each file in a print request.
+    Entries are an id, or {id, pages: [index, ...]} to print only some pages."""
+    for entry in req.get("files", []):
+        uid, which = (entry.get("id"), entry.get("pages")) if isinstance(entry, dict) else (entry, None)
+        up = app.uploads.get(uid)
+        if not (up and up.pages):
+            continue
+        idx = range(len(up.pages)) if which is None else \
+            [i for i in which if isinstance(i, int) and 0 <= i < len(up.pages)]
+        if idx:
+            yield up, [up.pages[i] for i in idx], [(uid, i) for i in idx]
 
 
 def _clamp(v, lo: int, hi: int, default: int) -> int:

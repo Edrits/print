@@ -254,3 +254,43 @@ def test_print_only_the_pages_kept(tmp_path, monkeypatch):
     finally:
         httpd.shutdown()
         httpd.server_close()
+
+
+def test_pages_skipped_between_sheets_are_not_printed(monkeypatch):
+    app, sent, _ = _sheet_app(monkeypatch)
+    from PIL import Image
+    pages = [Image.new("1", (1664, 2376), 1) for _ in range(4)]
+    for i, p in enumerate(pages):
+        p.paste(0, (0, 0, 10 * (i + 1), 10))           # tell the sheets apart by content
+    keys = [("f", i) for i in range(4)]
+    job = app.start_job(pages, 5, 1, "a4", "ble", ["x.pdf"], keys)
+    assert job.page == 1 and job.state == "waiting"
+    app.next_sheet({("f", 0), ("f", 1), ("f", 3)})       # page 3 (index 2) skipped mid-run
+    app.next_sheet({("f", 0), ("f", 1), ("f", 3)})
+    assert job.state == "done" and job.total == 3 and len(sent) == 3
+    widths = [jobmod_width(data) for _, data in sent]
+    assert widths == [10, 20, 40]                          # index 2 never went out
+
+
+def test_skipping_every_remaining_page_finishes_the_job(monkeypatch):
+    app, sent, page = _sheet_app(monkeypatch)
+    job = app.start_job([page, page], 5, 1, "a4", "ble", ["x.pdf"], [("f", 0), ("f", 1)])
+    app.next_sheet({("f", 0)})
+    assert job.state == "done" and len(sent) == 1
+
+
+def jobmod_width(data: bytes) -> int:
+    """Width in dots of the black mark at the top of a one-sheet job."""
+    from PIL import ImageOps
+    from escpos_decode import decode
+    _, img = decode(data)
+    return ImageOps.invert(img.convert("L")).getbbox()[2]
+
+
+def test_job_names_the_next_page_for_the_preview(monkeypatch):
+    app, sent, page = _sheet_app(monkeypatch)
+    job = app.start_job([page, page, page], 5, 1, "a4", "ble", ["x.pdf"],
+                        [("f", 0), ("f", 1), ("f", 2)])
+    assert job.info()["next"] == ["f", 1] and job.info()["printed"] == [["f", 0]]
+    app.next_sheet({("f", 0), ("f", 2)})                  # page 2 skipped: page 3 is next
+    assert job.state == "done" and job.info()["next"] is None
