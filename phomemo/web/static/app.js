@@ -323,7 +323,9 @@
           <div class="tp-progress-row"><span class="tp-figure" style="font-size:24px;line-height:28px">Sheet ${j.page + 1} <small>of ${j.total}</small></span><span class="tp-mono tp-muted" style="font-size:12px">${paused ? `paused ${fmtTime(paused)}` : "Bluetooth"}</span></div>
           ${bar(j.page)}
           <p class="tp-caption">${paused
-            ? (state.status.ble.paper === false ? "The printer reports it's out of paper. Load a sheet; printing continues when it's ready." : "The printer has stopped taking data, usually to cool down after dark areas. It resumes on its own; this waits up to 3 minutes.")
+            ? (state.status.ble.paper === true
+              ? "The printer has stopped taking data, usually to cool down after dark areas. It resumes on its own; this waits up to 3 minutes."
+              : `The printer is waiting for sheet ${j.page + 1}. Feed it in straight until the printer grabs it (the light turns green); printing starts by itself. If you reset the printer, this stops within a few seconds.`)
             : "Connecting and sending this sheet. Over Bluetooth each sheet is its own job, so you'll be asked to load the next one."}</p>
         </div></div></div>`;
     }

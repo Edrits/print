@@ -546,3 +546,31 @@ def test_ble_job_child_runs_send(monkeypatch, tmp_path, capsys):
     assert ble_job.main([str(job_file), "--eject", "--no-require-paper", "--rate", "123"]) == 0
     assert got == [(b"\x1b\x40", None, 123, True, False)]
     assert "STATE " in capsys.readouterr().out
+
+
+def test_disconnect_while_waiting_fails_fast(monkeypatch):
+    monkeypatch.setattr(ble, "LINK_CHECK", 0.01)
+    async def go():
+        c = ble.Credits()
+        c.connected = lambda: False                     # the printer was reset
+        t = time.monotonic()
+        with pytest.raises(ConnectionError, match="disconnected"):
+            await c.take(timeout=60)
+        assert time.monotonic() - t < 1
+    asyncio.run(go())
+
+
+class UntakenSheetPrinter(FakePrinter):
+    """Takes its opening credit's worth, never reports paper, never grants more."""
+    paper = None
+
+    def _printed(self):
+        self.in_flight -= 1
+
+
+def test_sheet_never_taken_says_nothing_printed(monkeypatch):
+    monkeypatch.setattr(ble, "CREDIT_TIMEOUT", 0.05)
+    monkeypatch.setattr(ble, "LINK_CHECK", 0.01)
+    ble.printer_state["paper"] = None
+    with pytest.raises(ConnectionError, match="never took the sheet"):
+        _send_to(monkeypatch, UntakenSheetPrinter(), b"\x00" * 10_000)

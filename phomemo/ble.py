@@ -271,6 +271,7 @@ NO_PAPER_WINDOW = 70 * 8 * 208    # bytes: ~70 mm of rows
 EJECT_MAX_MM = 320            # blank feed cap when ejecting a sheet
 EJECT_STALL = 8.0             # s without credit while ejecting = the sheet is out
 CREDIT_TIMEOUT = 180.0        # s without credit before giving up; pauses of 30s+ are normal
+LINK_CHECK = 2.0              # s between checks that the printer is still connected while waiting
 
 # What the printer last told us, for the web UI. Updated from notifications.
 printer_state = {"paper": None, "paper_at": None, "waiting_since": None}
@@ -290,6 +291,9 @@ class Credits:
         self.paper_out = False       # a `1a 06 88` arrived since this was last cleared
         self.paper_report = asyncio.Event()
         self._event = asyncio.Event()
+        # Whether the link is still up. A printer that is reset or switched off
+        # while we wait for credit would otherwise hold the job for CREDIT_TIMEOUT.
+        self.connected = lambda: True
 
     # One notification can carry several messages back to back (e.g. a credit
     # and a paper report), so it is parsed as a stream. Lengths by first byte.
@@ -327,15 +331,23 @@ class Credits:
             notable.append(b"<packed " + payload.hex().encode() + b">")
         return notable
 
-    async def take(self, timeout: float = CREDIT_TIMEOUT) -> None:
+    async def take(self, timeout: float | None = None) -> None:
+        timeout = CREDIT_TIMEOUT if timeout is None else timeout
         if self.available <= 0:
             printer_state["waiting_since"] = time.time()
         try:
+            deadline = time.monotonic() + timeout
             while self.available <= 0:
                 self._event.clear()
+                left = deadline - time.monotonic()
                 try:
-                    await asyncio.wait_for(self._event.wait(), timeout)
+                    await asyncio.wait_for(self._event.wait(), max(0.0, min(LINK_CHECK, left)))
                 except asyncio.TimeoutError:
+                    if not self.connected():
+                        raise ConnectionError(
+                            "The printer disconnected (was it reset or switched off?).") from None
+                    if time.monotonic() < deadline:
+                        continue
                     if printer_state["paper"] is False:
                         raise ConnectionError(
                             "The printer is out of paper. Load a sheet and print again.") from None
@@ -440,6 +452,7 @@ async def _send_once(data: bytes, dev, name, rate: int, eject: bool, require_pap
         size = max(20, min(char.max_write_without_response_size or 20, 244)) if no_resp else 20
 
         credits = Credits()
+        credits.connected = lambda: getattr(client, "is_connected", True)
 
         def on_notify(ch, payload: bytearray) -> None:
             for msg in credits.feed(bytes(payload)):   # plain +1 credits are chatter; log the rest
@@ -485,7 +498,15 @@ async def _send_once(data: bytes, dev, name, rate: int, eject: bool, require_pap
                     f"No paper: the printer reported none after {sent:,} bytes, so printing "
                     "stopped. Load a sheet (the light turns green) and print again.")
             if flow:
-                await credits.take()
+                try:
+                    await credits.take()
+                except ConnectionError as e:
+                    if confirmed or sent >= NO_PAPER_WINDOW or "disconnected" in str(e):
+                        raise
+                    raise ConnectionError(
+                        "The printer never took the sheet, so nothing printed. Feed it in "
+                        "straight until the printer grabs it (the light turns green), "
+                        "then print again.") from None
             await client.write_gatt_char(char, piece, response=not no_resp)
             sent += len(piece)
             progress["sent"] = sent
