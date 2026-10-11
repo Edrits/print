@@ -41,10 +41,18 @@ Use the sheet to tune your printer:
 phomemo print notes.md                 # Markdown: headings, lists, tables, code
 phomemo print letter.txt --mono        # plain text, monospace
 phomemo print ticket.pdf               # PDFs: crisp text, dithered photos
+phomemo print expenses.csv             # CSV/TSV: a table; wide ones turn sideways
 phomemo print photo.jpg                # photos: fit to one page, auto-rotated
 phomemo print a.pdf b.md --copies 2 --density 6
 echo "hello" | phomemo print - --type text
+phomemo print notes.md --ble           # over Bluetooth instead of USB
 ```
+
+**One sheet at a time.** The M08F takes in a whole job even after its sheet
+has run out, so a multi-sheet job sent in one go prints the first sheet and
+loses the rest. On A4 or Letter, `phomemo print` therefore sends each sheet as
+its own job and asks you in the terminal to load the next one (Enter prints
+it, `q` stops). Continuous paper and `--dry-run` still go as one job.
 
 To check a print without using paper:
 
@@ -61,8 +69,17 @@ phomemo ui
 
 Opens a local print screen at http://127.0.0.1:8632. Drop in files (or paste
 text), see every sheet before it prints, with page count, metres of paper and
-time, and check that the printer is connected. Add `--dry-run job.bin` to try it
-without a printer. It only listens on this Mac.
+time, and check that the printer is connected. Bluetooth is the default; the
+Printer panel switches to USB. Add `--dry-run job.bin` to try it without a
+printer. It only listens on this Mac, and only answers to `127.0.0.1` or
+`localhost`.
+
+- **Skip pages**: hover a sheet in the preview and click ×, or press Delete in
+  the full-size view. Skipped pages stay visible, faded, and don't print.
+- **Sheet by sheet**: on A4 or Letter each sheet is its own job. After each one
+  the screen waits with **Print sheet N** (also ⌘P) until you've loaded the
+  next; the preview outlines the next sheet. Pages you skip mid-run are
+  dropped, and a failed sheet can be tried again without reprinting the others.
 
 ### As an app in the Dock
 
@@ -99,12 +116,18 @@ Print dialogs default to US Letter (an ippeveprinter limitation, explained in
 physically loaded, so page breaks stay aligned. Letter content scales by about
 3% to fill the A4 width.
 
+**Known limitation:** the print dialog sends a whole document as one job and
+there's no way to ask you for the next sheet, so only the first sheet of a
+multi-page document prints reliably. Use `phomemo ui` or `phomemo print` for
+anything longer than a page.
+
 ## How it works
 
 ```
 file ──► render ──────────────────────► 1-bit pages ──► ESC/POS ──► USB serial
-         PDF:      PyMuPDF at exactly 1664 dots, AA off
+         PDF:      PyMuPDF at exactly 1664 dots, AA off           or Bluetooth LE
          Markdown: markdown-it → HTML → PyMuPDF Story → PDF
+         CSV:      table HTML → PyMuPDF Story → PDF (sideways if wide)
          image:    EXIF-rotate, fit page, gamma for dot gain
 ```
 
@@ -118,21 +141,24 @@ Thermal paper is pure black and white, so every grey has to be resolved:
 
 The protocol: init `1B 40`, density `1D 28 4B 02 00 31 n`, raster
 `1D 76 30 00 xL xH yL yH` in bands of ≤255 lines × 208 bytes, then feed
-`1B 64 n`. The printer is an STM32 USB CDC device (`0483:5740`).
+`1B 64 n`. The printer is an STM32 USB CDC device (`0483:5740`). Over
+Bluetooth the same bytes go to GATT characteristic `ff02`, paced by credits the
+printer grants on `ff03`, which also reports paper in and out (details in
+`phomemo/ble.py`).
 
 ## Status
 
-**Verified without hardware.** 30 tests check:
+**Used on a real M08F**, over Bluetooth and USB, from the print screen
+(Thermal.app). Over 100 tests (`pytest`) check, without hardware:
 - the command bytes match the hardware-verified reference driver
 - an independent decoder rebuilds every job **dot for dot** from the byte
   stream, for PDFs, Markdown and photos
-- page padding and copies behave correctly
-- the print-dialog path works end to end: IPP job → `ippeveprinter` →
-  hook → ESC/POS
+- page padding, copies, sheet-by-sheet jobs and skipped pages
+- Bluetooth flow control, paper reports, dropped links and stalls, against a
+  fake printer
+- the print-dialog path end to end: IPP job → `ippeveprinter` → hook → ESC/POS
 
-**Not yet verified on a real M08F:** the USB serial path on macOS, how
-density levels look on paper, and sheet-feed behaviour between pages. Print
-`phomemo test` first.
+Print `phomemo test` first to tune density for your paper.
 
 ## Credits
 

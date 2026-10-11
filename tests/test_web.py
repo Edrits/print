@@ -311,3 +311,24 @@ def test_usb_continuous_is_still_one_job(monkeypatch):
     monkeypatch.setattr(web.transport, "autodetect", lambda: "/dev/cu.usbmodemTEST")
     job = app.start_job([page, page], 5, 1, "continuous", "usb", ["x.pdf"])
     assert job.state == "done" and not job.per_sheet and job.page == 2
+
+
+def test_other_host_names_are_refused(server):
+    """DNS rebinding: evil.example resolving to 127.0.0.1 is same-origin with
+    itself, so the Host header is what gives it away."""
+    base, _ = server
+    port = base.rsplit(":", 1)[1]
+    status, _ = call(f"{base}/api/status", headers={"Host": f"evil.example:{port}"})
+    assert status == 403
+    status, _ = call(f"{base}/api/print", "POST", {"files": []},
+                     {"Host": f"evil.example:{port}", "Origin": f"http://evil.example:{port}"})
+    assert status == 403
+    assert call(f"{base}/api/status", headers={"Host": f"localhost:{port}"})[0] == 200
+
+
+def test_malformed_requests_are_400_not_crashes(server):
+    base, _ = server
+    for body in (b"[1, 2]", b'"x"', b"{bad json"):
+        assert call(f"{base}/api/print", "POST", body)[0] == 400
+    assert call(f"{base}/api/print", "POST", {"files": [["not", "an", "id"], {"id": 5}]})[0] == 400
+    assert call(f"{base}/api/print", "POST", {"files": "abc"})[0] == 400

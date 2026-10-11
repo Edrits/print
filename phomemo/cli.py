@@ -82,6 +82,20 @@ def _send(data: bytes, a: argparse.Namespace) -> None:
         port.send(data)
 
 
+def _ask_next_sheet(n: int, total: int) -> bool | None:
+    """Wait for the person to load sheet n. True to print it, False to stop,
+    None if there's no terminal to ask on. Uses /dev/tty, not stdin, which
+    may be the text being printed."""
+    try:
+        with open("/dev/tty", "r+") as tty:
+            tty.write(f"Load sheet {n} of {total} (the light turns green), "
+                      "then press Enter. q stops: ")
+            tty.flush()
+            return tty.readline().strip().lower() not in ("q", "quit")
+    except OSError:
+        return None
+
+
 def cmd_print(a: argparse.Namespace) -> int:
     if a.dry_run is None and not a.device and a.ble is None:
         a.device = transport.autodetect()   # fail before rendering, not after
@@ -89,10 +103,27 @@ def cmd_print(a: argparse.Namespace) -> int:
     pages = [p for _, ps in rendered for p in ps]
     if a.preview:
         _save_previews(rendered, Path(a.preview))
-    data = job.build(pages, job.JobOptions(density=a.density, feed=a.feed, cut=a.cut,
-                                           copies=a.copies), media=a.media)
     where = "dry run" if a.dry_run is not None else \
         (f"Bluetooth ({a.ble})" if a.ble is not None else a.device)
+    opts = job.JobOptions(density=a.density, feed=a.feed, cut=a.cut)
+    # The M08F takes in a whole job even after the sheet has run out, so on
+    # sheets each one is its own job, sent once the person has loaded it.
+    sheets = job.one_per_sheet(pages, a.copies)
+    if a.dry_run is None and spec.page_height_dots(a.media) is not None and len(sheets) > 1:
+        if _ask_next_sheet(1, len(sheets)) is not None:
+            for n, sheet in enumerate(sheets, 1):
+                if n > 1 and not _ask_next_sheet(n, len(sheets)):
+                    print(f"Stopped after {n - 1} of {len(sheets)} sheets.", file=sys.stderr)
+                    return 0
+                data = job.build([sheet], opts, media=a.media)
+                print(f"sheet {n} of {len(sheets)}, {len(data):,} bytes -> {where}",
+                      file=sys.stderr)
+                _send(data, a)
+            return 0
+        print("No terminal to ask for each sheet on, so all sheets go as one job: "
+              "only the first may print.", file=sys.stderr)
+    opts.copies = a.copies
+    data = job.build(pages, opts, media=a.media)
     print(f"{len(pages)} page(s), {len(data):,} bytes -> {where}", file=sys.stderr)
     _send(data, a)
     return 0
@@ -171,7 +202,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    pp = sub.add_parser("print", help="print files (PDF, Markdown, text, images)")
+    pp = sub.add_parser("print", help="print files (PDF, Markdown, text, CSV, images); "
+                                      "on sheets, asks you to load each one")
     pp.add_argument("files", nargs="+", help="files to print; '-' reads text from stdin")
     _render_args(pp)
     _device_args(pp)

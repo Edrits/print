@@ -2,7 +2,6 @@
 
 Command set confirmed against M-Wham/m08f-printer (MIT licence).
 """
-from . import spec
 
 
 def initialize() -> bytes:

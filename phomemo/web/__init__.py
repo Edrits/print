@@ -24,7 +24,6 @@ import time
 import uuid
 import webbrowser
 from dataclasses import dataclass, field
-from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse, parse_qs
@@ -42,6 +41,7 @@ BLE_SETTINGS = "x-apple.systempreferences:com.apple.preference.security?Privacy_
 _STATIC_TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
                  ".js": "text/javascript; charset=utf-8", ".svg": "image/svg+xml"}
 _DITHERS = (None, "hybrid") + raster.DITHERS
+_LOCAL_HOSTS = ("127.0.0.1", "localhost", "::1")
 
 
 @dataclass
@@ -383,6 +383,17 @@ class Handler(BaseHTTPRequestHandler):
             self._error(404, "no such file")
         return up
 
+    def _local_host(self) -> bool:
+        """Only answer requests addressed to this machine by a local name. A site
+        that points its own domain at 127.0.0.1 (DNS rebinding) is otherwise
+        "same origin" with this server and could print or read uploads."""
+        try:
+            url = urlparse("//" + self.headers.get("Host", ""))
+            port = url.port
+        except ValueError:
+            return False
+        return url.hostname in _LOCAL_HOSTS and port in (None, self.server.server_address[1])
+
     def _same_origin(self) -> bool:
         """Refuse writes from other sites the browser happens to have open."""
         origin = self.headers.get("Origin")
@@ -392,6 +403,8 @@ class Handler(BaseHTTPRequestHandler):
     # --- routes --------------------------------------------------------------
 
     def do_GET(self):
+        if not self._local_host():
+            return self._error(403, "unknown host")
         url = urlparse(self.path)
         parts = [p for p in url.path.split("/") if p]
         if url.path == "/":
@@ -415,7 +428,7 @@ class Handler(BaseHTTPRequestHandler):
         self._error(404, "not found")
 
     def do_POST(self):
-        if not self._same_origin():
+        if not (self._local_host() and self._same_origin()):
             return self._error(403, "cross-origin request refused")
         parts = [p for p in urlparse(self.path).path.split("/") if p]
         try:
@@ -427,12 +440,11 @@ class Handler(BaseHTTPRequestHandler):
                 up = self._upload(parts[2])
                 if up is None:
                     return
-                opts = json.loads(self._body() or b"{}")
-                return self._json(self.app.render(up, opts).info())
+                return self._json(self.app.render(up, _object(self._body())).info())
             if parts == ["api", "print"]:
-                return self._print(json.loads(self._body() or b"{}"))
+                return self._print(_object(self._body()))
             if parts == ["api", "test"]:
-                req = json.loads(self._body() or b"{}")
+                req = _object(self._body())
                 density = _clamp(req.get("density"), 1, 8, 5)
                 job = self.app.start_job([testpage.build(density)], density, 1, "a4",
                                          req.get("via", "usb"), ["Calibration page"])
@@ -447,7 +459,7 @@ class Handler(BaseHTTPRequestHandler):
             if parts == ["api", "job", "cancel"]:
                 return self._json(self.app.cancel().info())
             if parts == ["api", "job", "next"]:
-                req = json.loads(self._body() or b"{}")
+                req = _object(self._body())
                 keep = None
                 if "files" in req:
                     keep = {k for _, _, ks in _selection(self.app, req) for k in ks}
@@ -459,7 +471,7 @@ class Handler(BaseHTTPRequestHandler):
         self._error(404, "not found")
 
     def do_DELETE(self):
-        if not self._same_origin():
+        if not (self._local_host() and self._same_origin()):
             return self._error(403, "cross-origin request refused")
         parts = [p for p in urlparse(self.path).path.split("/") if p]
         if parts[:2] == ["api", "files"] and len(parts) == 3:
@@ -493,8 +505,11 @@ class Handler(BaseHTTPRequestHandler):
 def _selection(app: App, req: dict):
     """(upload, pages, [(file id, page index)]) for each file in a print request.
     Entries are an id, or {id, pages: [index, ...]} to print only some pages."""
-    for entry in req.get("files", []):
+    files = req.get("files")
+    for entry in files if isinstance(files, list) else []:
         uid, which = (entry.get("id"), entry.get("pages")) if isinstance(entry, dict) else (entry, None)
+        if not isinstance(uid, str) or not (which is None or isinstance(which, list)):
+            continue
         up = app.uploads.get(uid)
         if not (up and up.pages):
             continue
@@ -502,6 +517,14 @@ def _selection(app: App, req: dict):
             [i for i in which if isinstance(i, int) and 0 <= i < len(up.pages)]
         if idx:
             yield up, [up.pages[i] for i in idx], [(uid, i) for i in idx]
+
+
+def _object(body: bytes) -> dict:
+    """A JSON request body that must be an object; anything else is a 400."""
+    obj = json.loads(body or b"{}")
+    if not isinstance(obj, dict):
+        raise ValueError("expected a JSON object")
+    return obj
 
 
 def _clamp(v, lo: int, hi: int, default: int) -> int:

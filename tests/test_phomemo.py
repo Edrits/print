@@ -305,3 +305,43 @@ def test_wide_csv_turns_sideways_instead_of_clipping(tmp_path):
     f.write_text(wide)
     pages = render.render(str(f))
     assert pages and all(p.size == (spec.WIDTH_DOTS, spec.page_height_dots("a4")) for p in pages)
+
+
+# -- CLI: one job per sheet -----------------------------------------------------
+
+def _cli_print(monkeypatch, tmp_path, answers, media="a4", dry=False):
+    """Run `phomemo print` on a 3-page file with a fake port and fake prompts."""
+    from phomemo import cli
+    md = tmp_path / "three.md"
+    md.write_text("\n\n".join(f"# Page {i}\n\n" + "line\n\n" * 90 for i in range(3)))
+    sent, asked = [], []
+    monkeypatch.setattr(cli, "_send", lambda data, a: sent.append(data))
+    monkeypatch.setattr(cli, "_ask_next_sheet", lambda n, total: asked.append(n) or answers.pop(0))
+    args = ["print", str(md), "--media", media, "--device", "/dev/null"]
+    if dry:
+        args += ["--dry-run"]
+    assert cli.main(args) == 0
+    return sent, asked
+
+
+def test_cli_prints_each_sheet_after_asking(monkeypatch, tmp_path):
+    sent, asked = _cli_print(monkeypatch, tmp_path, [True] * 10)
+    assert len(sent) >= 2 and len(sent) == len(asked)
+    for data in sent:                       # every job is exactly one sheet, trimmed
+        _, img = decode(data)
+        assert img.height <= spec.page_height_dots("a4")
+
+
+def test_cli_q_stops_between_sheets(monkeypatch, tmp_path):
+    sent, asked = _cli_print(monkeypatch, tmp_path, [True, False])
+    assert len(sent) == 1 and asked == [1, 2]
+
+
+def test_cli_without_a_terminal_sends_one_job(monkeypatch, tmp_path):
+    sent, _ = _cli_print(monkeypatch, tmp_path, [None])
+    assert len(sent) == 1
+
+
+def test_cli_dry_run_and_continuous_are_one_job(monkeypatch, tmp_path):
+    assert len(_cli_print(monkeypatch, tmp_path, [], dry=True)[0]) == 1
+    assert len(_cli_print(monkeypatch, tmp_path, [], media="continuous")[0]) == 1

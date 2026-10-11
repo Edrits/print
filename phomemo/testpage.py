@@ -100,8 +100,8 @@ def _type_samples(width: int) -> Image.Image:
             for pt in (6, 7, 8, 9, 10, 11, 12, 14, 18)]
     rows.append(f'<p style="font-size:11pt;font-weight:bold;margin:0 0 3pt 0">'
                 f'11pt bold&#160;&#160;{sample}</p>')
-    rows.append(f'<p style="font-size:10pt;font-family:monospace;font-weight:bold;margin:0">'
-                f'10pt mono bold&#160;&#160;def hello(): return 42</p>')
+    rows.append('<p style="font-size:10pt;font-family:monospace;font-weight:bold;margin:0">'
+                '10pt mono bold&#160;&#160;def hello(): return 42</p>')
     grey, _ = next(pdf.pdf_pages(md.html_to_pdf("".join(rows), margin_mm=0)))
     img1 = raster.to_1bit(grey, "threshold")
     from PIL import ImageOps
