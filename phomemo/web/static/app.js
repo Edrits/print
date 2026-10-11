@@ -322,13 +322,13 @@
       return `<div class="tp-panel tp-progress-panel">
         <div class="tp-panel-head"><div class="tp-row">${viewPill()}<span class="tp-caption">${what}</span></div></div>
         <div class="tp-pad"><div class="tp-progress">
-          <div class="tp-progress-row"><span class="tp-figure" style="font-size:24px;line-height:28px">Sheet ${j.page + 1} <small>of ${j.total}</small></span><span class="tp-mono tp-muted" style="font-size:12px">${paused ? `paused ${fmtTime(paused)}` : "Bluetooth"}</span></div>
+          <div class="tp-progress-row"><span class="tp-figure" style="font-size:24px;line-height:28px">Sheet ${j.page + 1} <small>of ${j.total}</small></span><span class="tp-mono tp-muted" style="font-size:12px">${paused ? `paused ${fmtTime(paused)}` : j.via === "usb" ? "USB" : "Bluetooth"}</span></div>
           ${bar(j.page)}
           <p class="tp-caption">${paused
             ? (state.status.ble.paper === true
               ? "The printer has stopped taking data, usually to cool down after dark areas. It resumes on its own; this waits up to 3 minutes."
               : `The printer is waiting for sheet ${j.page + 1}. Feed it in straight until the printer grabs it (the light turns green); printing starts by itself. If you reset the printer, this stops within a few seconds.`)
-            : "Connecting and sending this sheet. Over Bluetooth each sheet is its own job, so you'll be asked to load the next one."}</p>
+            : `${j.via === "usb" ? "Sending this sheet." : "Connecting and sending this sheet."} Each sheet is its own job, so you'll be asked to load the next one.`}</p>
         </div></div></div>`;
     }
     if (j.state === "waiting") {
@@ -406,8 +406,8 @@
     const order = readyFiles();
     const total = order.reduce((s, f) => s + kept(f).length, 0);
     const anySkipped = shownFiles().some((f) => f.skip.length);
-    // Bluetooth to continuous paper sends the whole job at once: no current page to point at.
-    const live = j.state === "printing" && j.via !== "ble" && j.kind !== "check" && settings.copies === 1 && j.total === total;
+    // Continuous paper over Bluetooth sends the whole job at once: no current page to point at.
+    const live = j.state === "printing" && j.via !== "ble" && !j.per_sheet && j.kind !== "check" && settings.copies === 1 && j.total === total;
     // Per-sheet Bluetooth jobs name the next page and the printed ones directly.
     const sheetJob = j.per_sheet && (j.state === "printing" || resumable()) && j.next;
     const isNext = (f, pi) => sheetJob && j.next[0] === f.id && j.next[1] === pi;

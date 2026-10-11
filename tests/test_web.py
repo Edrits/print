@@ -294,3 +294,20 @@ def test_job_names_the_next_page_for_the_preview(monkeypatch):
     assert job.info()["next"] == ["f", 1] and job.info()["printed"] == [["f", 0]]
     app.next_sheet({("f", 0), ("f", 2)})                  # page 2 skipped: page 3 is next
     assert job.state == "done" and job.info()["next"] is None
+
+
+def test_usb_sheets_also_print_one_per_job(monkeypatch):
+    app, sent, page = _sheet_app(monkeypatch)
+    monkeypatch.setattr(web.transport, "autodetect", lambda: "/dev/cu.usbmodemTEST")
+    job = app.start_job([page, page], 5, 1, "a4", "usb", ["x.pdf"])
+    assert job.per_sheet and job.state == "waiting" and len(sent) == 1
+    assert sent[0][0] == {"device": "/dev/cu.usbmodemTEST"}     # USB, not Bluetooth
+    app.next_sheet()
+    assert job.state == "done" and len(sent) == 2
+
+
+def test_usb_continuous_is_still_one_job(monkeypatch):
+    app, sent, page = _sheet_app(monkeypatch)
+    monkeypatch.setattr(web.transport, "autodetect", lambda: "/dev/cu.usbmodemTEST")
+    job = app.start_job([page, page], 5, 1, "continuous", "usb", ["x.pdf"])
+    assert job.state == "done" and not job.per_sheet and job.page == 2

@@ -74,7 +74,7 @@ class Job:
     phase: str = "sending"       # sending | connecting (BLE: sent in one go at the end)
     kind: str = "print"          # print | check (Bluetooth link test, no paper)
     cancel: threading.Event = field(default_factory=threading.Event)
-    # Bluetooth on sheet media: one job per sheet; "waiting" between them.
+    # Sheet media over Bluetooth or USB: one job per sheet; "waiting" between them.
     per_sheet: bool = False
     sheets: list = field(default_factory=list, repr=False)   # all sheets, in order
     keys: list = field(default_factory=list, repr=False)     # (file id, page index) per sheet
@@ -141,7 +141,7 @@ class App:
                 via = "dry"           # written to a file: never Bluetooth, page progress works
             job = Job(state="printing", total=len(pages) * copies, started=time.time(),
                       files=files, via=via)
-            if via == "ble" and spec.page_height_dots(media) is not None:
+            if via in ("ble", "usb") and spec.page_height_dots(media) is not None:
                 job.per_sheet, job.density = True, density
                 job.sheets = jobmod.one_per_sheet(pages, copies)
                 if keys is not None and len(keys) == len(pages):
@@ -232,12 +232,16 @@ class App:
             job.state, job.error = "error", str(e).strip()
 
     def _run_sheet(self, job: Job):
-        """One sheet over Bluetooth, then wait for the next to be loaded. The
-        M08F takes in a whole job even after the sheet has run out, so sending
-        every sheet at once printed the first and dropped the rest unseen."""
+        """One sheet, then wait for the next to be loaded. The M08F takes in a
+        whole job even after the sheet has run out, so sending every sheet at
+        once printed the first and dropped the rest unseen."""
         page = job.sheets[job.page]
         try:
-            with transport.open_port(ble="auto", ble_eject=True, ble_isolate=True) as port:
+            if job.via == "usb":
+                port_cm = transport.open_port(device=self.device or transport.autodetect())
+            else:
+                port_cm = transport.open_port(ble="auto", ble_eject=True, ble_isolate=True)
+            with port_cm as port:
                 port.send(escpos.initialize() + escpos.density(job.density))
                 port.send(b"".join(escpos.raster_block(wb, h, data)
                                    for wb, h, data in raster.bands(page)))
